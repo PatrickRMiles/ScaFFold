@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# flux: --exclusive
+# flux: -N 1
+# flux: -g=1
+# flux: -t 60m
+# flux: -qpdebug
+# flux: -B fractale
+
+ml rocm/6.4.2 rccl/fast-env-slows-mpi
+
+. .venvs/scaffoldvenv-tuo/bin/activate
+
+# Avoid spindle error
+export SPINDLE_FLUXOPT=off
+
+# Avoid libmagma error
+export LD_PRELOAD=/opt/rocm-6.4.2/llvm/lib/libomp.so
+
+torchrun-hpc -N 1 -n 1 $(which scaffold) generate_fractals -c $(pwd)/ScaFFold/configs/benchmark_default.yml
+
+# Uncomment if you want torch profiling
+#export PROFILE_TORCH=ON
+
+torchrun-hpc -N 1 -n 4 --gpus-per-proc 1 $(which scaffold) benchmark -c $(pwd)/ScaFFold/configs/benchmark_default.yml
+#torchrun-hpc -N 2 -n 4 --gpus-per-proc 1 $(which scaffold) benchmark -c $(pwd)/ScaFFold/configs/benchmark_default.yml

@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-data = { "ScaFFold" = [
+    "package_data/weights_ins145.csv",
+    "fractals/var0.15/3DIFS_param/*",
+    "configs/*",
+] }
+include-package-data = true
+[tool.setuptools.packages.find]
+include = ["ScaFFold*"]
+
+[tool.ruff]
+line-length = 88
+exclude = [
+    "__pycache__",
+    ".venv",
+    ".venvs",
+    "build",
+    "dist",
+    "**/*.ipynb",
+    "ScaFFold/viz/**/*.py",
+]
+
+[tool.ruff.lint]
+select = ["F", "E", "I"]      # include "I" to enable import rules (isort), "F" for PEP8 and style, and "E" for Logic and correctness (unused imports etc.)
+fixable = ["I"]               # allow Ruff to reorder imports
+ignore = ["E501"]             # this is handled by ruff format
+
+[project]
+name = "ScaFFold"
+version = "0.1.0"
+description = "ScaFFold: Scalable AI Benchmark for HPC-AI Systems"
+readme = "README.md"
+authors = [
+    { name = "Patrick Miles", email = "patrickrobertmiles@gmail.com"},
+    { name = "Senhe Hao", email = "hao3@llnl.gov" },
+    { name = "Nikoli Dryden", email = "dryden1@llnl.gov" },
+    { name = "Brian Van Essen", email = "vanessen1@llnl.gov" },
+    { name = "Olga Pearce", email = "pearce8@llnl.gov" },
+]
+license = { file = "LICENSE" }
+dependencies = [
+  "hpc-launcher>=1.0.3",
+  "matplotlib>=3.9.4",
+  "numpy>=1.26.4",
+  "numba>=0.60.0",
+  "tqdm>=4.67.1",
+  "wandb>=0.19.6",
+  "open3d>=0.18.0",
+  "PyYAML>=6.0.2",
+]
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+profiling = [
+  "pybind11>=3.0.0"
+]
+cuda = [
+    "torch==2.8.0+cu126",
+    "mpi4py==4.0.2",
+]
+rocm = [
+    "torch==2.8.0+rocm6.4",
+    "mpi4py==4.0.2",
+]
+rocmwci = [
+    "torch==2.8.0+rocm642",
+    "mpi4py==4.1.1.dev0+mpich.8.1.32",
+]
+
+[project.entry-points.console_scripts]
+scaffold = "ScaFFold.cli:main"

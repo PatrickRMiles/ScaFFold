@@ -1,0 +1,23 @@
+#!/bin/bash
+
+#SBATCH -N 1
+#SBATCH -n 4
+#SBATCH --gpus 4
+#SBATCH --time 60
+#SBATCH --exclusive
+#SBATCH -A fractale
+#SBATCH -perl
+
+ml cuda/12.6.0 gcc/12.1.1 mvapich2/2.3.7
+
+. .venvs/scaffoldvenv-matrix/bin/activate
+
+export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+
+scaffold generate_fractals -c ScaFFold/configs/benchmark_default.yml
+
+# Uncomment if you want torch profiling
+#export PROFILE_TORCH=ON
+
+torchrun-hpc -N 1 -n 4 --gpus-per-proc 1 $(which scaffold) benchmark -c $(pwd)/ScaFFold/configs/benchmark_default.yml
+#torchrun-hpc -N 2 -n 4 --gpus-per-proc 1 $(which scaffold) benchmark -c $(pwd)/ScaFFold/configs/benchmark_default.yml

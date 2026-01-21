@@ -1,0 +1,22 @@
+--index-url https://pypi.org/simple
+hpc-launcher>=1.0.3
+matplotlib>=3.9.4
+numpy>=1.26.4
+numba>=0.60.0
+tqdm>=4.67.1
+wandb>=0.19.6
+open3d>=0.18.0
+PyYAML>=6.0.2
+mpi4py==4.0.2 --no-binary mpi4py
+
+# cuda
+#     torch==2.7.1+cu126
+#     torchvision==0.22.1+cu126
+#     torchaudio==2.7.1+cu126
+# --extra-index-url https://download.pytorch.org/whl/cu126
+
+# rocm
+#     torch==2.8.0+rocm6.
+#     torchvision==0.23.0+rocm6.4
+#     torchaudio==2.8.0+rocm6.4
+# --extra-index-url https://download.pytorch.org/whl/test/rocm6.4
