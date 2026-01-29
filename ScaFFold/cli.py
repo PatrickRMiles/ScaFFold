@@ -179,15 +179,21 @@ def main():
 
         # Recalculate unet_layers to capture any CLI overrides
         combined_config["unet_layers"] = (
-            combined_config["problem_scale"] - combined_config["unet_bottleneck_dim"] + 1
+            combined_config["problem_scale"]
+            - combined_config["unet_bottleneck_dim"]
+            + 1
         )
 
         # Resolve paths to absolute, matching Config() behavior
         if "base_run_dir" in combined_config and combined_config["base_run_dir"]:
-            combined_config["base_run_dir"] = str(Path(combined_config["base_run_dir"]).resolve())
-        
+            combined_config["base_run_dir"] = str(
+                Path(combined_config["base_run_dir"]).resolve()
+            )
+
         if "dataset_dir" in combined_config and combined_config["dataset_dir"]:
-            combined_config["dataset_dir"] = str(Path(combined_config["dataset_dir"]).resolve())
+            combined_config["dataset_dir"] = str(
+                Path(combined_config["dataset_dir"]).resolve()
+            )
 
         # Calculate these variables after override
         combined_config["vol_size"] = pow(2, combined_config["problem_scale"])
