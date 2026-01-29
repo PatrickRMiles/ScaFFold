@@ -188,10 +188,10 @@ def main():
         
         if "dataset_dir" in combined_config and combined_config["dataset_dir"]:
             combined_config["dataset_dir"] = str(Path(combined_config["dataset_dir"]).resolve())
-            
+
         # Calculate these variables after override
         combined_config["vol_size"] = pow(2, combined_config["problem_scale"])
-        combined_config["point_num"] = int(combined_config["vol_size"] ** 3 / 256)        
+        combined_config["point_num"] = int(combined_config["vol_size"] ** 3 / 256)
 
         # Handle Restart / Resume logic
         if hasattr(args, "restart") and args.restart == True:
