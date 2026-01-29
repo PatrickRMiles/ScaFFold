@@ -148,20 +148,25 @@ GPUS_PER_PROC="1" # Defaulting to 1, adjust if needed
 # Additional torchrun-hpc arguments (e.g. --launcher-args for specific scheduler flags)
 LAUNCHER_ADDITIONAL_ARGS=''
 
-LAUNCHER_ARGS="-l . -N $NODES -n $TASKS_PER_NODE --gpus-per-proc $GPUS_PER_PROC $LAUNCHER_ADDITIONAL_ARGS"
-
-IFS=' ' read -r -a LAUNCHER_ARR <<< "$LAUNCHER_ARGS"
+# Use a proper Bash array for arguments to handle paths with spaces safely
+LAUNCHER_ARGS=(
+    -l "$RUN_DIR"
+    -N "$NODES" 
+    -n "$TASKS_PER_NODE" 
+    --gpus-per-proc "$GPUS_PER_PROC"
+    $LAUNCHER_ADDITIONAL_ARGS
+)
 
 # Exact Python command to rerun the CLI
 {py_array_decl}
 
 echo "Restarting in $RUN_DIR via torchrun-hpc:"
-echo "  torchrun-hpc $LAUNCHER_ARGS ..."
+echo "  torchrun-hpc ${{LAUNCHER_ARGS[*]}} ..."
 printf '  python cmd: '; printf '%q ' "${{PY[@]}}"; echo
 
 cd "$RUN_DIR"
 # Invoking torchrun-hpc to handle scheduler interaction (Flux/Slurm)
-exec torchrun-hpc "${{LAUNCHER_ARR[@]}}" "${{PY[@]}}"
+exec torchrun-hpc "${{LAUNCHER_ARGS[@]}}" "${{PY[@]}}"
 """
 
 
