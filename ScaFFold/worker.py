@@ -180,13 +180,13 @@ def main(kwargs_dict: dict = {}):
         assert dist.get_world_size() % config.dc_num_shards == 0, (
             f"world_size={dist.get_world_size()} must be divisible by dc_num_shards={config.dc_num_shards}"
         )
-        # Select which full-tensor dim to shard: 2 + dc_shard_dim
-        shard_dim = 2 + int(config.dc_shard_dim)
+
         ps = ParallelStrategy(
-            num_shards=int(config.dc_num_shards),
-            shard_dim=shard_dim,
+            num_shards=config.dc_num_shards,
+            shard_dim=config.dc_shard_dims,
             device_type=device.type,
         )
+
         model = model.to(device, memory_format=torch.channels_last_3d)
         # Wrap with DistConvDDP that corrects gradient scaling for dc submesh
         model = DistConvDDP(
