@@ -639,7 +639,7 @@ class PyTorchTrainer(BaseTrainer):
                             loss_dice = sharded_dice_loss(local_preds_softmax, local_labels_one_hot, spatial_mesh)
 
                             # 3. Combine Loss
-                            loss = loss_ce + 
+                            loss = loss_ce + loss_dice
                             train_dice_total += (1.0 - loss_dice.detach().item())  # Note that this is dice *score*, hence the 1 - loss
                             
                             end_code_region("calculate_loss")
