@@ -169,12 +169,12 @@ def main(config: Config):
         # Generate points
         points = generate_single_instance(config.point_num, params)
 
-        # Force point_data to be contiguous 
+        # Force point_data to be contiguous
         points_contiguous = np.ascontiguousarray(points, dtype=DEFAULT_NP_DTYPE)
 
         # Construct the output path (Change extension to .npy)
         out_dir = Path(instance_write_dir) / f"{category:06d}"
-        filename = f"{category:06d}_{instance:04d}.npy" # Swapped .ply for .npy
+        filename = f"{category:06d}_{instance:04d}.npy"  # Swapped .ply for .npy
 
         # Ensure parent directory exists
         out_dir.mkdir(parents=True, exist_ok=True)

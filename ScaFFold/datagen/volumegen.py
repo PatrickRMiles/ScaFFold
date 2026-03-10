@@ -32,7 +32,7 @@ DEFAULT_NP_DTYPE = np.float64
 
 def load_np_ptcloud(path: str) -> np.ndarray:
     """
-    Read a .npy file and return an (N,3) array of dtype float64.    
+    Read a .npy file and return an (N,3) array of dtype float64.
     """
     pts = np.load(path)
     return pts.astype(DEFAULT_NP_DTYPE, copy=False)
