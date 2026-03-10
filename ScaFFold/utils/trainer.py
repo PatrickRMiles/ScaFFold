@@ -44,6 +44,57 @@ from ScaFFold.utils.perf_measure import adiak_value, begin_code_region, end_code
 from ScaFFold.utils.utils import gather_and_print_mem
 
 
+class SpatialAllReduce(torch.autograd.Function):
+    """
+    Custom Autograd function to sum partial loss components sequentially across 
+    an N-dimensional spatial device mesh.
+    """
+    @staticmethod
+    def forward(ctx, input, spatial_mesh):
+        output = input.clone()
+        
+        # Sequentially reduce across every spatial dimension in the mesh
+        for mesh_dim in range(spatial_mesh.ndim):
+            # Get the 1D ProcessGroup for this specific dimension
+            pg = spatial_mesh.get_group(mesh_dim)
+            # Sum the tensor across this dimension
+            dist.all_reduce(output, op=dist.ReduceOp.SUM, group=pg)
+            
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Pass the identical gradient straight through. Zero communication.
+        return grad_output, None
+
+def sharded_dice_loss(
+    input: torch.Tensor,
+    target: torch.Tensor,
+    spatial_mesh, # <-- Update type signature here
+    epsilon: float = 1e-6,
+):
+    assert input.size() == target.size(), f"Shape mismatch: {input.size()} vs {target.size()}"
+    assert input.dim() == 5, f"Expected 5D tensor, got {input.dim()}D"
+
+    sum_dim = (-1, -2, -3)
+
+    local_inter = 2.0 * (input * target).sum(dim=sum_dim)
+    local_sets_sum_raw = input.sum(dim=sum_dim) + target.sum(dim=sum_dim)
+
+    packed = torch.stack([local_inter, local_sets_sum_raw])
+    
+    # Pass the entire mesh into our updated custom autograd function
+    packed_global = SpatialAllReduce.apply(packed, spatial_mesh)
+    
+    global_inter = packed_global[0]
+    global_sets_sum_raw = packed_global[1]
+
+    global_sets_sum = torch.where(global_sets_sum_raw == 0, global_inter, global_sets_sum_raw)
+    dice_score = (global_inter + epsilon) / (global_sets_sum + epsilon)
+    
+    return 1.0 - dice_score.mean()
+
+
 class BaseTrainer:
     """
     A class that encapsulates some basic functionality for training our model.
@@ -317,6 +368,15 @@ class PyTorchTrainer(BaseTrainer):
         except Exception as e:
             self.log.warning(f"Failed to truncate stats file: {e}")
 
+    def _get_memsize(self, tensor, tensor_label: str, verbosity: int = 0):
+            """Log size of tensor in memory"""
+
+            if verbosity < 2:
+                return
+            tensor_memory_bytes = tensor[0].element_size() * tensor[0].nelement()
+            tensor_memory_gb = tensor_memory_bytes / (1024 ** 3)
+            self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
+
     def train(self):
         """
         Execute model training
@@ -324,78 +384,131 @@ class PyTorchTrainer(BaseTrainer):
 
         self.cleanup_or_resume()
 
+        # DistConv ParallelStrategy
+        ps = getattr(self.config, "_parallel_strategy", None)
+        if ps is None:
+            raise RuntimeError(
+                "ParallelStrategy not found in config. Set config._parallel_strategy when wrapping model with DistConvDDP."
+            )
+
         warmup_epochs = self.config.warmup_epochs
         if warmup_epochs > 0:
             begin_code_region("warmup")
             # Keep BN/Dropout from changing behavior/statistics
-            self.model.eval()
+            self.model.train()
             start_warmup = time.time()
             self.log.info(f"Running {warmup_epochs} warmup epoch(s)")
 
-            ps = getattr(self.config, "_parallel_strategy", None)
+            # Get the process group for spatial sharding mesh
+            spatial_mesh = ps.device_mesh[ps.distconv_dim_names]
+
+            # Get placements for DDP sharding
+            num_spatial_dims = len(ps.shard_dim)
+            ddp_placements = [Shard(0)] + [Replicate()] * num_spatial_dims
 
             for _ in range(warmup_epochs):
                 for batch in self.train_loader:
+                    # Load initial samples and labels
                     images, true_masks = batch["image"], batch["mask"]
 
+                    # Move samples and labels to GPU
                     images = images.to(
                         device=self.device,
                         dtype=torch.float32,
                         memory_format=torch.channels_last_3d,
-                        non_blocking=False,
+                        non_blocking=True
                     )
-                    images_dc = DCTensor.distribute(images, ps)
-
+                    self._get_memsize(images, "Original image", config.verbosity)
                     true_masks = true_masks.to(
-                        device=self.device, dtype=torch.long, non_blocking=True
+                        device=self.device, 
+                        dtype=torch.long, 
+                        non_blocking=True
                     )
+                    self._get_memsize(images, "Original label", config.verbosity)
+
+                    # Add a dummy channel dimension to get 5D [B, 1, D, H, W]
+                    true_masks = true_masks.unsqueeze(1)
+
+                    # Data parallel sharding
+                    images_dp = DTensor.from_local(
+                        images, ps.device_mesh, placements=ddp_placements
+                    ).to_local()
+                    
+                    true_masks_dp = DTensor.from_local(
+                        true_masks, ps.device_mesh, placements=ddp_placements
+                    ).to_local()
+
+                    # Delete source tensors immediately after use to keep memory down
+                    del images, true_masks
+
+                    # Spatial sharding via DistConv
+                    images_dc = DCTensor.distribute(images_dp, ps)
+                    true_masks_dc = DCTensor.distribute(true_masks_dp, ps)
+                    self._get_memsize(images_dc, "Sharded image", config.verbosity)
 
                     with torch.autocast(
                         self.device.type if self.device.type != "mps" else "cpu",
                         enabled=self.config.torch_amp,
                     ):
+
                         # Forward on DCTensor
                         masks_pred_dc = self.model(images_dc)
+                        self.log.debug(f"forward pass complete")
+                        
+                        # Extract the underlying PyTorch local tensors
+                        local_preds = masks_pred_dc
+                        local_labels_5d = true_masks_dc
 
-                        # Convert predictions for loss
-                        if isinstance(ps.num_shards, tuple) and len(ps.num_shards) == 1:
-                            n_shards = ps.num_shards[0]
-                        else:
-                            n_shards = ps.num_shards
-                        if images.size(0) < n_shards:
-                            # For small batches (e.g., N=1 with dc_num_shards=2), replicate outputs
-                            masks_pred = masks_pred_dc.to_replicate()
-                            labels_for_loss = true_masks
-                        else:
-                            # Otherwise, shard labels across batch dim to match to_ddp layout
-                            masks_pred = masks_pred_dc.to_ddp()
-                            dt_labels = distribute_tensor(
-                                true_masks,
-                                device_mesh=ps.device_mesh[
-                                    f"dc{self.config.shard_dim + 2}"
-                                ],
-                                placements=[Shard(0)],
-                            )
-                            labels_for_loss = dt_labels.to_local()
+                        # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
+                        local_labels = local_labels_5d.squeeze(1)
+                        if self.world_rank == 0:
+                            self.log.debug(f"Local Preds Shape: {local_preds.shape}") 
+                            # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
+                            self.log.debug(f"Local Labels Shape: {local_labels.shape}")
+                            # Should be something like [1, 128, 128, 64]
 
-                        CE_loss = self.criterion(masks_pred, labels_for_loss)
+                        # --- SHARDED LOSS CALCULATION ---
+                        current_mem = torch.cuda.memory_allocated() / (1024 ** 3)
+                        self.log.debug(f"Calculating sharded loss. Mem: {current_mem:.2f} GB.")
+                        
+                        # 1. Sharded Cross Entropy
+                        local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction='sum')
+                        
+                        # Pass the spatial_mesh directly
+                        global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh) 
+                        
+                        global_total_voxels = local_labels.numel() * math.prod(self.config.dc_num_shards) 
+                        loss_ce = global_ce_sum / global_total_voxels
 
-                        # Calculate the train dice loss
-                        masks_pred_softmax = F.softmax(masks_pred, dim=1).float()
-                        true_masks_onehot = (
-                            F.one_hot(labels_for_loss, self.config.n_categories + 1)
-                            .permute(0, 4, 1, 2, 3)
-                            .float()
-                        )
-                        train_dice_curr = dice_loss(
-                            masks_pred_softmax,
-                            true_masks_onehot,
-                            multiclass=True,
-                        )
-                        loss = CE_loss + train_dice_curr
+                        # 2. Sharded Dice Loss
+                        local_preds_softmax = F.softmax(local_preds, dim=1) 
+                        local_labels_one_hot = F.one_hot(local_labels, num_classes=self.config.n_categories+1).permute(0, 4, 1, 2, 3).float()
 
-                        # Fine as long as we don't step/update
-                        self.grad_scaler.scale(loss).backward()
+                        # Pass the spatial_mesh directly
+                        loss_dice = sharded_dice_loss(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+
+                        # 3. Combine Loss
+                        loss = loss_ce + loss_dice
+
+                    self.log.debug(f"loss calculation complete. Proceeding to backward pass")
+
+                    # Backward pass
+                    self.grad_scaler.scale(loss).backward()
+                    self.log.debug(f"backward pass complete. Stepping optimizer")
+
+                    self.grad_scaler.step(self.optimizer)
+                    self.grad_scaler.update()
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                    # Free memory aggressively
+                    del images_dc, true_masks_dc, masks_pred_dc 
+                    del local_preds, local_labels, local_preds_softmax, local_labels_one_hot
+                    del loss_ce, loss_dice, loss, images_dp, true_masks_dp
+
+                    if self.world_rank == 0:
+                        peak_alloc = torch.cuda.max_memory_allocated() / (1024**3)
+                        peak_reserved = torch.cuda.max_memory_reserved() / (1024**3)
+                        self.log.debug(f"[MEM-PEAK] Peak alloc: {peak_alloc:.2f} GiB | Peak reserved: {peak_reserved:.2f} GiB", flush=True)
 
             # Nuke any accumulated grads so the first real step starts clean
             for p in self.model.parameters():
@@ -414,13 +527,6 @@ class PyTorchTrainer(BaseTrainer):
                         f"Maxmimum epochs reached '{self.config.epochs}'. Concluding training early (may have not converged)."
                     )
                     break
-
-                # DistConv ParallelStrategy
-                ps = getattr(self.config, "_parallel_strategy", None)
-                if ps is None:
-                    raise RuntimeError(
-                        "ParallelStrategy not found in config. Set config._parallel_strategy when wrapping model with DistConvDDP."
-                    )
 
                 # Timer and tracking variables
                 epoch_start_time = time.time()
@@ -451,6 +557,7 @@ class PyTorchTrainer(BaseTrainer):
 
                     begin_code_region("batch_loop")
                     for batch in self.train_loader:
+                        # Load initial samples and labels
                         images, true_masks = batch["image"], batch["mask"]
 
                         begin_code_region("image_to_device")
@@ -466,17 +573,25 @@ class PyTorchTrainer(BaseTrainer):
                         end_code_region("image_to_device")
                         gather_and_print_mem(self.log, "after_batch_to_device")
 
-                        # Replicate batch across dc mesh, shard batch across ddp mesh.
-                        # This ensures all dc ranks in the same ddp group see the same samples,
-                        # and ddp ranks see disjoint samples.
-                        images_dp = distribute_tensor(
-                            images, ps.device_mesh, placements=[Shard(0), Replicate()]
+                        # Add a dummy channel dimension to get 5D [B, 1, D, H, W]
+                        true_masks = true_masks.unsqueeze(1)
+
+                        # Data parallel sharding
+                        images_dp = DTensor.from_local(
+                            images, ps.device_mesh, placements=ddp_placements
                         ).to_local()
-                        true_masks_dp = distribute_tensor(
-                            true_masks,
-                            ps.device_mesh,
-                            placements=[Shard(0), Replicate()],
+                        
+                        true_masks_dp = DTensor.from_local(
+                            true_masks, ps.device_mesh, placements=ddp_placements
                         ).to_local()
+
+                        # Delete source tensors immediately after use to keep memory down
+                        del images, true_masks
+
+                        # Spatial sharding via DistConv
+                        images_dc = DCTensor.distribute(images_dp, ps)
+                        true_masks_dc = DCTensor.distribute(true_masks_dp, ps)
+                        self._get_memsize(images_dc, "Sharded image", config.verbosity)
 
                         with torch.autocast(
                             self.device.type if self.device.type != "mps" else "cpu",
@@ -486,72 +601,47 @@ class PyTorchTrainer(BaseTrainer):
                             torch.cuda.reset_peak_memory_stats()
                             gather_and_print_mem(self.log, "pre_forward")
                             begin_code_region("predict")
-
-                            # Spatially shard the chosen dimension across dc mesh
-                            dcx = DCTensor.distribute(images_dp, ps)
-                            dcy = self.model(dcx)
-                            # Convert back to batch-sharded layout across the dc mesh
-                            masks_pred = dcy.to_ddp()
-
+                            masks_pred_dc = self.model(images_dc)
                             end_code_region("predict")
                             gather_and_print_mem(self.log, "post_forward")
 
-                            # Reshard labels across dc mesh to match masks_pred's batch partition
-                            # Start from dc-replicated labels, then shard batch across dc
-                            true_masks_ddp = (
-                                DTensor.from_local(
-                                    true_masks_dp,
-                                    device_mesh=ps.device_mesh[
-                                        f"dc{self.config.shard_dim + 2}"
-                                    ],
-                                    placements=[Replicate()],
-                                )
-                                .redistribute(
-                                    device_mesh=ps.device_mesh[
-                                        f"dc{self.config.shard_dim + 2}"
-                                    ],
-                                    placements=[Shard(0)],
-                                )
-                                .to_local()
-                            )
+                            # Extract the underlying PyTorch local tensors
+                            local_preds = masks_pred_dc
+                            local_labels_5d = true_masks_dc
+
+                            # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
+                            local_labels = local_labels_5d.squeeze(1)
+                            if self.world_rank == 0:
+                                self.log.debug(f"Local Preds Shape: {local_preds.shape}") 
+                                # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
+                                self.log.debug(f"Local Labels Shape: {local_labels.shape}")
+                                # Should be something like [1, 128, 128, 64]
 
                             begin_code_region("calculate_loss")
-                            # Calculate the loss
-                            if self.config.n_categories + 1 == 1:
-                                loss = self.criterion(
-                                    masks_pred.squeeze(1), true_masks_ddp.float()
-                                )
-                                loss += dice_loss(
-                                    F.sigmoid(masks_pred.squeeze(1)),
-                                    true_masks_ddp.float(),
-                                    multiclass=False,
-                                )
-                            else:
-                                # Calculate the CrossEntropy loss
-                                CE_loss = self.criterion(masks_pred, true_masks_ddp)
+                            # --- SHARDED LOSS CALCULATION ---
+                            current_mem = torch.cuda.memory_allocated() / (1024 ** 3)
+                            self.log.debug(f"Calculating sharded loss. Mem: {current_mem:.2f} GB.")
+                            
+                            # 1. Sharded Cross Entropy
+                            local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction='sum')
+                            
+                            # Pass the spatial_mesh directly
+                            global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh) 
+                            
+                            global_total_voxels = local_labels.numel() * math.prod(self.config.dc_num_shards) 
+                            loss_ce = global_ce_sum / global_total_voxels
 
-                                # Calculate the train dice loss
-                                masks_pred_softmax = F.softmax(
-                                    masks_pred, dim=1
-                                ).float()
-                                true_masks_onehot = (
-                                    F.one_hot(
-                                        true_masks_ddp, self.config.n_categories + 1
-                                    )
-                                    .permute(0, 4, 1, 2, 3)
-                                    .float()
-                                )
-                                train_dice_curr = dice_loss(
-                                    masks_pred_softmax,
-                                    true_masks_onehot,
-                                    multiclass=True,
-                                )
+                            # 2. Sharded Dice Loss
+                            local_preds_softmax = F.softmax(local_preds, dim=1) 
+                            local_labels_one_hot = F.one_hot(local_labels, num_classes=self.config.n_categories+1).permute(0, 4, 1, 2, 3).float()
 
-                                # Our loss function is CE loss + dice loss
-                                loss = CE_loss + train_dice_curr
+                            # Pass the spatial_mesh directly
+                            loss_dice = sharded_dice_loss(local_preds_softmax, local_labels_one_hot, spatial_mesh)
 
-                                # Track the train dice loss separately for debugging
-                                train_dice_total += train_dice_curr
+                            # 3. Combine Loss
+                            loss = loss_ce + 
+                            train_dice_total += (1.0 - loss_dice.detach().item())  # Note that this is dice *score*, hence the 1 - loss
+                            
                             end_code_region("calculate_loss")
 
                         gather_and_print_mem(self.log, "pre_backward")
@@ -574,7 +664,7 @@ class PyTorchTrainer(BaseTrainer):
 
                         # Update the loss
                         begin_code_region("update_loss")
-                        pbar.update(images_dp.shape[0])
+                        pbar.update(images_dc.shape[0])
                         self.global_step += 1
                         batch_step += 1
                         # Stay on GPU
