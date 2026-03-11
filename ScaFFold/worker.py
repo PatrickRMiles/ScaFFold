@@ -162,9 +162,9 @@ def main(kwargs_dict: dict = {}):
     # Initialize model
     begin_code_region("init_model")
     config.dc_num_shards = getattr(config, "dc_num_shards", config.dc_num_shards)
-    config.dc_shard_dim = getattr(config, "dc_shard_dim", config.dc_shard_dim)
+    config.dc_shard_dims = getattr(config, "dc_shard_dims", config.dc_shard_dims)
     log.info(
-        f"DistConv num_shards={config.dc_num_shards}, shard_dim={config.dc_shard_dim}"
+        f"DistConv num_shards={config.dc_num_shards}, shard_dim={config.dc_shard_dims}"
     )
     device = get_device()
     log.info(f"Using device: {device}")
