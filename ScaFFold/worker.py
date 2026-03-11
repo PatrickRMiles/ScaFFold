@@ -176,9 +176,9 @@ def main(kwargs_dict: dict = {}):
     )
     if config.dist:
         # DDP + DistConv setup
-        # Ensure world_size is divisible by dc_num_shards
-        assert dist.get_world_size() % config.dc_num_shards == 0, (
-            f"world_size={dist.get_world_size()} must be divisible by dc_num_shards={config.dc_num_shards}"
+        # Ensure world_size is divisible by total distconv shards
+        assert dist.get_world_size() % math.prod(config.dc_num_shards) == 0, (
+            f"world_size={dist.get_world_size()} must be divisible by total number of distconv shards = {math.prod(config.dc_num_shards)}"
         )
 
         ps = ParallelStrategy(
