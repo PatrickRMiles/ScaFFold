@@ -73,8 +73,8 @@ class Config:
         self.target_dice = config_dict["target_dice"]
         self.checkpoint_interval = config_dict["checkpoint_interval"]
 
-        self.dc_num_shards = _ensure_tuple(config_dict.get("num_shards", 1))
-        self.dc_shard_dims = _ensure_tuple(config_dict.get("shard_dim", 2))
+        self.dc_num_shards = _ensure_tuple(config_dict.get("dc_num_shards", (1, 1, 1)))
+        self.dc_shard_dims = _ensure_tuple(config_dict.get("dc_shard_dims", (2, 3, 4)))
         self.dc_total_shards = math.prod(self.dc_num_shards)
         # Safety Check: Length mismatch
         if len(self.dc_num_shards) != len(self.dc_shard_dims):
@@ -128,4 +128,4 @@ def _ensure_tuple(val):
         val = val.strip("()[]").split(",")
         return tuple(int(i.strip()) for i in val if i.strip())
     # Fallback for single integer
-    return (int(val),)
+    return (1, 1, int(val),)
