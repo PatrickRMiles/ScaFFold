@@ -14,7 +14,7 @@
 
 import torch
 from torch import Tensor
-
+import torch.distributed as dist
 from ScaFFold.utils.perf_measure import annotate
 
 
