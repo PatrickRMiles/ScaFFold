@@ -114,13 +114,14 @@ def load_config(file_path: str, config_type: str):
             f"Invalid config type specified: {type}. Must be either 'sweep' or 'run'"
         )
 
+
 def _ensure_tuple(val):
     """
     Ensures the input value is converted to a tuple of integers.
     Handles: int, list, tuple, and string representations like "[2,2]" or "2,2".
     """
     if val is None:
-        return (1,) # Default safety
+        return (1,)  # Default safety
     if isinstance(val, (list, tuple)):
         return tuple(int(i) for i in val)
     if isinstance(val, str):
@@ -128,4 +129,8 @@ def _ensure_tuple(val):
         val = val.strip("()[]").split(",")
         return tuple(int(i.strip()) for i in val if i.strip())
     # Fallback for single integer
-    return (1, 1, int(val),)
+    return (
+        1,
+        1,
+        int(val),
+    )

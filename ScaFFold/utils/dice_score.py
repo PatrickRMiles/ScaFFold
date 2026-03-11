@@ -13,8 +13,9 @@
 # SPDX-License-Identifier: (Apache-2.0)
 
 import torch
-from torch import Tensor
 import torch.distributed as dist
+from torch import Tensor
+
 from ScaFFold.utils.perf_measure import annotate
 
 
@@ -86,25 +87,29 @@ def compute_sharded_dice(
     Computes the globally sharded Dice score.
     Returns the raw score tensor of shape [Batch, Channels].
     """
-    assert preds.size() == targets.size(), f"Shape mismatch: {preds.size()} vs {targets.size()}"
+    assert preds.size() == targets.size(), (
+        f"Shape mismatch: {preds.size()} vs {targets.size()}"
+    )
     assert preds.dim() == 5, f"Expected 5D tensor, got {preds.dim()}D"
 
-    sum_dim = (-1, -2, -3) # D, H, W
+    sum_dim = (-1, -2, -3)  # D, H, W
 
     local_inter = 2.0 * (preds * targets).sum(dim=sum_dim)
     local_sets_sum_raw = preds.sum(dim=sum_dim) + targets.sum(dim=sum_dim)
 
     packed = torch.stack([local_inter, local_sets_sum_raw])
-    
+
     # Global reduce across spatial mesh
     packed_global = SpatialAllReduce.apply(packed, spatial_mesh)
-    
+
     global_inter = packed_global[0]
     global_sets_sum_raw = packed_global[1]
 
-    global_sets_sum = torch.where(global_sets_sum_raw == 0, global_inter, global_sets_sum_raw)
-    
+    global_sets_sum = torch.where(
+        global_sets_sum_raw == 0, global_inter, global_sets_sum_raw
+    )
+
     # Calculate score
     dice_score = (global_inter + epsilon) / (global_sets_sum + epsilon)
-    
+
     return dice_score

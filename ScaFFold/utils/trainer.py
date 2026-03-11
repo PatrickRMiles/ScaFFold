@@ -35,7 +35,7 @@ from tqdm import tqdm
 
 from ScaFFold.utils.checkpointing import CheckpointManager
 from ScaFFold.utils.data_loading import FractalDataset
-from ScaFFold.utils.dice_score import dice_loss, SpatialAllReduce, compute_sharded_dice
+from ScaFFold.utils.dice_score import SpatialAllReduce, compute_sharded_dice, dice_loss
 from ScaFFold.utils.distributed import get_local_rank, get_world_rank, get_world_size
 
 # Local
@@ -318,13 +318,13 @@ class PyTorchTrainer(BaseTrainer):
             self.log.warning(f"Failed to truncate stats file: {e}")
 
     def _get_memsize(self, tensor, tensor_label: str, verbosity: int = 0):
-            """Log size of tensor in memory"""
+        """Log size of tensor in memory"""
 
-            if verbosity < 2:
-                return
-            tensor_memory_bytes = tensor[0].element_size() * tensor[0].nelement()
-            tensor_memory_gb = tensor_memory_bytes / (1024 ** 3)
-            self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
+        if verbosity < 2:
+            return
+        tensor_memory_bytes = tensor[0].element_size() * tensor[0].nelement()
+        tensor_memory_gb = tensor_memory_bytes / (1024**3)
+        self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
 
     def train(self):
         """
@@ -364,13 +364,11 @@ class PyTorchTrainer(BaseTrainer):
                         device=self.device,
                         dtype=torch.float32,
                         memory_format=torch.channels_last_3d,
-                        non_blocking=True
+                        non_blocking=True,
                     )
                     self._get_memsize(images, "Original image", self.config.verbose)
                     true_masks = true_masks.to(
-                        device=self.device, 
-                        dtype=torch.long, 
-                        non_blocking=True
+                        device=self.device, dtype=torch.long, non_blocking=True
                     )
                     self._get_memsize(images, "Original label", self.config.verbose)
 
@@ -381,7 +379,7 @@ class PyTorchTrainer(BaseTrainer):
                     images_dp = DTensor.from_local(
                         images, ps.device_mesh, placements=ddp_placements
                     ).to_local()
-                    
+
                     true_masks_dp = DTensor.from_local(
                         true_masks, ps.device_mesh, placements=ddp_placements
                     ).to_local()
@@ -398,11 +396,10 @@ class PyTorchTrainer(BaseTrainer):
                         self.device.type if self.device.type != "mps" else "cpu",
                         enabled=self.config.torch_amp,
                     ):
-
                         # Forward on DCTensor
                         masks_pred_dc = self.model(images_dc)
                         self.log.debug(f"forward pass complete")
-                        
+
                         # Extract the underlying PyTorch local tensors
                         local_preds = masks_pred_dc
                         local_labels_5d = true_masks_dc
@@ -410,34 +407,52 @@ class PyTorchTrainer(BaseTrainer):
                         # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
                         local_labels = local_labels_5d.squeeze(1)
                         if self.world_rank == 0:
-                            self.log.debug(f"Local Preds Shape: {local_preds.shape}") 
+                            self.log.debug(f"Local Preds Shape: {local_preds.shape}")
                             # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
                             self.log.debug(f"Local Labels Shape: {local_labels.shape}")
                             # Should be something like [1, 128, 128, 64]
 
                         # --- SHARDED LOSS CALCULATION ---
-                        current_mem = torch.cuda.memory_allocated() / (1024 ** 3)
-                        self.log.debug(f"Calculating sharded loss. Mem: {current_mem:.2f} GB.")
-                        
+                        current_mem = torch.cuda.memory_allocated() / (1024**3)
+                        self.log.debug(
+                            f"Calculating sharded loss. Mem: {current_mem:.2f} GB."
+                        )
+
                         # 1. Sharded Cross Entropy
-                        local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction='sum')
-                        
+                        local_ce_sum = F.cross_entropy(
+                            local_preds, local_labels, reduction="sum"
+                        )
+
                         # Pass the spatial_mesh directly
-                        global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh) 
-                        
-                        global_total_voxels = local_labels.numel() * math.prod(self.config.dc_num_shards) 
+                        global_ce_sum = SpatialAllReduce.apply(
+                            local_ce_sum, spatial_mesh
+                        )
+
+                        global_total_voxels = local_labels.numel() * math.prod(
+                            self.config.dc_num_shards
+                        )
                         loss_ce = global_ce_sum / global_total_voxels
 
                         # 2. Sharded Dice Loss
-                        local_preds_softmax = F.softmax(local_preds, dim=1).float() 
-                        local_labels_one_hot = F.one_hot(local_labels, num_classes=self.config.n_categories+1).permute(0, 4, 1, 2, 3).float()
-                        dice_scores = compute_sharded_dice(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+                        local_preds_softmax = F.softmax(local_preds, dim=1).float()
+                        local_labels_one_hot = (
+                            F.one_hot(
+                                local_labels, num_classes=self.config.n_categories + 1
+                            )
+                            .permute(0, 4, 1, 2, 3)
+                            .float()
+                        )
+                        dice_scores = compute_sharded_dice(
+                            local_preds_softmax, local_labels_one_hot, spatial_mesh
+                        )
                         loss_dice = 1.0 - dice_scores.mean()
 
                         # 3. Combine Loss
                         loss = loss_ce + loss_dice
 
-                    self.log.debug(f"loss calculation complete. Proceeding to backward pass")
+                    self.log.debug(
+                        f"loss calculation complete. Proceeding to backward pass"
+                    )
 
                     # Backward pass
                     self.grad_scaler.scale(loss).backward()
@@ -448,14 +463,22 @@ class PyTorchTrainer(BaseTrainer):
                     self.optimizer.zero_grad(set_to_none=True)
 
                     # Free memory aggressively
-                    del images_dc, true_masks_dc, masks_pred_dc 
-                    del local_preds, local_labels, local_preds_softmax, local_labels_one_hot
+                    del images_dc, true_masks_dc, masks_pred_dc
+                    del (
+                        local_preds,
+                        local_labels,
+                        local_preds_softmax,
+                        local_labels_one_hot,
+                    )
                     del loss_ce, loss_dice, loss, images_dp, true_masks_dp
 
                     if self.world_rank == 0:
                         peak_alloc = torch.cuda.max_memory_allocated() / (1024**3)
                         peak_reserved = torch.cuda.max_memory_reserved() / (1024**3)
-                        self.log.debug(f"[MEM-PEAK] Peak alloc: {peak_alloc:.2f} GiB | Peak reserved: {peak_reserved:.2f} GiB", flush=True)
+                        self.log.debug(
+                            f"[MEM-PEAK] Peak alloc: {peak_alloc:.2f} GiB | Peak reserved: {peak_reserved:.2f} GiB",
+                            flush=True,
+                        )
 
             # Nuke any accumulated grads so the first real step starts clean
             for p in self.model.parameters():
@@ -527,7 +550,7 @@ class PyTorchTrainer(BaseTrainer):
                         images_dp = DTensor.from_local(
                             images, ps.device_mesh, placements=ddp_placements
                         ).to_local()
-                        
+
                         true_masks_dp = DTensor.from_local(
                             true_masks, ps.device_mesh, placements=ddp_placements
                         ).to_local()
@@ -538,7 +561,9 @@ class PyTorchTrainer(BaseTrainer):
                         # Spatial sharding via DistConv
                         images_dc = DCTensor.distribute(images_dp, ps)
                         true_masks_dc = DCTensor.distribute(true_masks_dp, ps)
-                        self._get_memsize(images_dc, "Sharded image", self.config.verbose)
+                        self._get_memsize(
+                            images_dc, "Sharded image", self.config.verbose
+                        )
 
                         with torch.autocast(
                             self.device.type if self.device.type != "mps" else "cpu",
@@ -559,37 +584,58 @@ class PyTorchTrainer(BaseTrainer):
                             # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
                             local_labels = local_labels_5d.squeeze(1)
                             if self.world_rank == 0:
-                                self.log.debug(f"Local Preds Shape: {local_preds.shape}") 
+                                self.log.debug(
+                                    f"Local Preds Shape: {local_preds.shape}"
+                                )
                                 # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
-                                self.log.debug(f"Local Labels Shape: {local_labels.shape}")
+                                self.log.debug(
+                                    f"Local Labels Shape: {local_labels.shape}"
+                                )
                                 # Should be something like [1, 128, 128, 64]
 
                             begin_code_region("calculate_loss")
                             # --- SHARDED LOSS CALCULATION ---
-                            current_mem = torch.cuda.memory_allocated() / (1024 ** 3)
-                            self.log.debug(f"Calculating sharded loss. Mem: {current_mem:.2f} GB.")
-                            
+                            current_mem = torch.cuda.memory_allocated() / (1024**3)
+                            self.log.debug(
+                                f"Calculating sharded loss. Mem: {current_mem:.2f} GB."
+                            )
+
                             # 1. Sharded Cross Entropy
-                            local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction='sum')
-                            
+                            local_ce_sum = F.cross_entropy(
+                                local_preds, local_labels, reduction="sum"
+                            )
+
                             # Pass the spatial_mesh directly
-                            global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh) 
-                            
-                            global_total_voxels = local_labels.numel() * math.prod(self.config.dc_num_shards) 
+                            global_ce_sum = SpatialAllReduce.apply(
+                                local_ce_sum, spatial_mesh
+                            )
+
+                            global_total_voxels = local_labels.numel() * math.prod(
+                                self.config.dc_num_shards
+                            )
                             loss_ce = global_ce_sum / global_total_voxels
 
                             # 2. Sharded Dice Loss
-                            local_preds_softmax = F.softmax(local_preds, dim=1).float() 
-                            local_labels_one_hot = F.one_hot(local_labels, num_classes=self.config.n_categories+1).permute(0, 4, 1, 2, 3).float()
+                            local_preds_softmax = F.softmax(local_preds, dim=1).float()
+                            local_labels_one_hot = (
+                                F.one_hot(
+                                    local_labels,
+                                    num_classes=self.config.n_categories + 1,
+                                )
+                                .permute(0, 4, 1, 2, 3)
+                                .float()
+                            )
 
                             # Compute sharded dice using new function
-                            dice_scores = compute_sharded_dice(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+                            dice_scores = compute_sharded_dice(
+                                local_preds_softmax, local_labels_one_hot, spatial_mesh
+                            )
                             loss_dice = 1.0 - dice_scores.mean()
 
                             # 3. Combine Loss
                             loss = loss_ce + loss_dice
                             train_dice_total += dice_scores[:, 1:].mean().item()
-                            
+
                             end_code_region("calculate_loss")
 
                         gather_and_print_mem(self.log, "pre_backward")

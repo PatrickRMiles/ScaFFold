@@ -18,8 +18,15 @@ from distconv import DCTensor
 from torch.distributed.tensor import DTensor, Replicate, Shard, distribute_tensor
 from tqdm import tqdm
 
-from ScaFFold.utils.dice_score import dice_coeff, dice_loss, multiclass_dice_coeff, SpatialAllReduce, compute_sharded_dice
+from ScaFFold.utils.dice_score import (
+    SpatialAllReduce,
+    compute_sharded_dice,
+    dice_coeff,
+    dice_loss,
+    multiclass_dice_coeff,
+)
 from ScaFFold.utils.perf_measure import annotate
+
 
 @annotate()
 @torch.inference_mode()
@@ -55,15 +62,15 @@ def evaluate(
                 dtype=torch.float32,
                 memory_format=torch.channels_last_3d,
             )
-            mask_true = mask_true.to(
-                device=device, dtype=torch.long
-            ).contiguous()
+            mask_true = mask_true.to(device=device, dtype=torch.long).contiguous()
 
             # Dummy channel dimension [B, 1, D, H, W]
             mask_true = mask_true.unsqueeze(1)
 
             # DDP Sharding
-            ddp_placements = [Shard(0)] + [Replicate()] * len(parallel_strategy.shard_dim)
+            ddp_placements = [Shard(0)] + [Replicate()] * len(
+                parallel_strategy.shard_dim
+            )
             image_dp = DTensor.from_local(
                 image, parallel_strategy.device_mesh, placements=ddp_placements
             ).to_local()
@@ -74,7 +81,7 @@ def evaluate(
             # DistConv Spatial Sharding
             dcx = DCTensor.distribute(image_dp, parallel_strategy)
             mask_true_dc = DCTensor.distribute(mask_true_dp, parallel_strategy)
-            
+
             # Forward pass on sharded data
             dcy = net(dcx)
 
@@ -88,21 +95,27 @@ def evaluate(
                 continue
 
             # --- 1. Sharded CE Loss ---
-            local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction='sum')
+            local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction="sum")
             global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh)
-            
+
             # Divide by total global voxels to get the mean CE Loss
-            global_total_voxels = local_labels.numel() * np.prod(parallel_strategy.num_shards)
+            global_total_voxels = local_labels.numel() * np.prod(
+                parallel_strategy.num_shards
+            )
             CE_loss = global_ce_sum / global_total_voxels
 
             # --- 2. Format Predictions & Labels (Strictly Multiclass) ---
             mask_pred_probs = F.softmax(local_preds, dim=1).float()
-            mask_true_onehot = F.one_hot(local_labels, n_categories + 1).permute(0, 4, 1, 2, 3).float()
-            
+            mask_true_onehot = (
+                F.one_hot(local_labels, n_categories + 1).permute(0, 4, 1, 2, 3).float()
+            )
+
             # Dice loss uses probabilities
-            dice_score_probs = compute_sharded_dice(mask_pred_probs, mask_true_onehot, spatial_mesh)
+            dice_score_probs = compute_sharded_dice(
+                mask_pred_probs, mask_true_onehot, spatial_mesh
+            )
             dice_loss_curr = 1.0 - dice_score_probs.mean()
-            
+
             # Eval metric (excluding background class 0)
             # dice_score_probs shape is [Batch, Channels]. We slice [:, 1:] to drop background
             batch_dice_score = dice_score_probs[:, 1:].mean()
