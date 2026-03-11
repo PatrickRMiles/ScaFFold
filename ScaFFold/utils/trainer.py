@@ -35,64 +35,13 @@ from tqdm import tqdm
 
 from ScaFFold.utils.checkpointing import CheckpointManager
 from ScaFFold.utils.data_loading import FractalDataset
-from ScaFFold.utils.dice_score import dice_loss
+from ScaFFold.utils.dice_score import dice_loss, SpatialAllReduce, compute_sharded_dice
 from ScaFFold.utils.distributed import get_local_rank, get_world_rank, get_world_size
 
 # Local
 from ScaFFold.utils.evaluate import evaluate
 from ScaFFold.utils.perf_measure import adiak_value, begin_code_region, end_code_region
 from ScaFFold.utils.utils import gather_and_print_mem
-
-
-class SpatialAllReduce(torch.autograd.Function):
-    """
-    Custom Autograd function to sum partial loss components sequentially across 
-    an N-dimensional spatial device mesh.
-    """
-    @staticmethod
-    def forward(ctx, input, spatial_mesh):
-        output = input.clone()
-        
-        # Sequentially reduce across every spatial dimension in the mesh
-        for mesh_dim in range(spatial_mesh.ndim):
-            # Get the 1D ProcessGroup for this specific dimension
-            pg = spatial_mesh.get_group(mesh_dim)
-            # Sum the tensor across this dimension
-            dist.all_reduce(output, op=dist.ReduceOp.SUM, group=pg)
-            
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # Pass the identical gradient straight through. Zero communication.
-        return grad_output, None
-
-def sharded_dice_loss(
-    input: torch.Tensor,
-    target: torch.Tensor,
-    spatial_mesh, # <-- Update type signature here
-    epsilon: float = 1e-6,
-):
-    assert input.size() == target.size(), f"Shape mismatch: {input.size()} vs {target.size()}"
-    assert input.dim() == 5, f"Expected 5D tensor, got {input.dim()}D"
-
-    sum_dim = (-1, -2, -3)
-
-    local_inter = 2.0 * (input * target).sum(dim=sum_dim)
-    local_sets_sum_raw = input.sum(dim=sum_dim) + target.sum(dim=sum_dim)
-
-    packed = torch.stack([local_inter, local_sets_sum_raw])
-    
-    # Pass the entire mesh into our updated custom autograd function
-    packed_global = SpatialAllReduce.apply(packed, spatial_mesh)
-    
-    global_inter = packed_global[0]
-    global_sets_sum_raw = packed_global[1]
-
-    global_sets_sum = torch.where(global_sets_sum_raw == 0, global_inter, global_sets_sum_raw)
-    dice_score = (global_inter + epsilon) / (global_sets_sum + epsilon)
-    
-    return 1.0 - dice_score.mean()
 
 
 class BaseTrainer:
@@ -390,6 +339,12 @@ class PyTorchTrainer(BaseTrainer):
             raise RuntimeError(
                 "ParallelStrategy not found in config. Set config._parallel_strategy when wrapping model with DistConvDDP."
             )
+        # Get the process group for spatial sharding mesh
+        spatial_mesh = ps.device_mesh[ps.distconv_dim_names]
+
+        # Get placements for DDP sharding
+        num_spatial_dims = len(ps.shard_dim)
+        ddp_placements = [Shard(0)] + [Replicate()] * num_spatial_dims
 
         warmup_epochs = self.config.warmup_epochs
         if warmup_epochs > 0:
@@ -398,13 +353,6 @@ class PyTorchTrainer(BaseTrainer):
             self.model.train()
             start_warmup = time.time()
             self.log.info(f"Running {warmup_epochs} warmup epoch(s)")
-
-            # Get the process group for spatial sharding mesh
-            spatial_mesh = ps.device_mesh[ps.distconv_dim_names]
-
-            # Get placements for DDP sharding
-            num_spatial_dims = len(ps.shard_dim)
-            ddp_placements = [Shard(0)] + [Replicate()] * num_spatial_dims
 
             for _ in range(warmup_epochs):
                 for batch in self.train_loader:
@@ -418,13 +366,13 @@ class PyTorchTrainer(BaseTrainer):
                         memory_format=torch.channels_last_3d,
                         non_blocking=True
                     )
-                    self._get_memsize(images, "Original image", config.verbosity)
+                    self._get_memsize(images, "Original image", self.config.verbose)
                     true_masks = true_masks.to(
                         device=self.device, 
                         dtype=torch.long, 
                         non_blocking=True
                     )
-                    self._get_memsize(images, "Original label", config.verbosity)
+                    self._get_memsize(images, "Original label", self.config.verbose)
 
                     # Add a dummy channel dimension to get 5D [B, 1, D, H, W]
                     true_masks = true_masks.unsqueeze(1)
@@ -444,7 +392,7 @@ class PyTorchTrainer(BaseTrainer):
                     # Spatial sharding via DistConv
                     images_dc = DCTensor.distribute(images_dp, ps)
                     true_masks_dc = DCTensor.distribute(true_masks_dp, ps)
-                    self._get_memsize(images_dc, "Sharded image", config.verbosity)
+                    self._get_memsize(images_dc, "Sharded image", self.config.verbose)
 
                     with torch.autocast(
                         self.device.type if self.device.type != "mps" else "cpu",
@@ -481,11 +429,10 @@ class PyTorchTrainer(BaseTrainer):
                         loss_ce = global_ce_sum / global_total_voxels
 
                         # 2. Sharded Dice Loss
-                        local_preds_softmax = F.softmax(local_preds, dim=1) 
+                        local_preds_softmax = F.softmax(local_preds, dim=1).float() 
                         local_labels_one_hot = F.one_hot(local_labels, num_classes=self.config.n_categories+1).permute(0, 4, 1, 2, 3).float()
-
-                        # Pass the spatial_mesh directly
-                        loss_dice = sharded_dice_loss(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+                        dice_scores = compute_sharded_dice(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+                        loss_dice = 1.0 - dice_scores.mean()
 
                         # 3. Combine Loss
                         loss = loss_ce + loss_dice
@@ -591,7 +538,7 @@ class PyTorchTrainer(BaseTrainer):
                         # Spatial sharding via DistConv
                         images_dc = DCTensor.distribute(images_dp, ps)
                         true_masks_dc = DCTensor.distribute(true_masks_dp, ps)
-                        self._get_memsize(images_dc, "Sharded image", config.verbosity)
+                        self._get_memsize(images_dc, "Sharded image", self.config.verbose)
 
                         with torch.autocast(
                             self.device.type if self.device.type != "mps" else "cpu",
@@ -632,15 +579,16 @@ class PyTorchTrainer(BaseTrainer):
                             loss_ce = global_ce_sum / global_total_voxels
 
                             # 2. Sharded Dice Loss
-                            local_preds_softmax = F.softmax(local_preds, dim=1) 
+                            local_preds_softmax = F.softmax(local_preds, dim=1).float() 
                             local_labels_one_hot = F.one_hot(local_labels, num_classes=self.config.n_categories+1).permute(0, 4, 1, 2, 3).float()
 
-                            # Pass the spatial_mesh directly
-                            loss_dice = sharded_dice_loss(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+                            # Compute sharded dice using new function
+                            dice_scores = compute_sharded_dice(local_preds_softmax, local_labels_one_hot, spatial_mesh)
+                            loss_dice = 1.0 - dice_scores.mean()
 
                             # 3. Combine Loss
                             loss = loss_ce + loss_dice
-                            train_dice_total += (1.0 - loss_dice.detach().item())  # Note that this is dice *score*, hence the 1 - loss
+                            train_dice_total += dice_scores[:, 1:].mean().item()
                             
                             end_code_region("calculate_loss")
 
@@ -652,6 +600,7 @@ class PyTorchTrainer(BaseTrainer):
 
                         begin_code_region("step_and_update")
                         if batch_step + 1 == len(self.train_loader):
+                            self.grad_scaler.unscale_(self.optimizer)
                             torch.nn.utils.clip_grad_norm_(
                                 self.model.parameters(), max_norm=1.0
                             )
