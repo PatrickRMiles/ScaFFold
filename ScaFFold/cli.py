@@ -195,7 +195,6 @@ def main():
         combined_config["unet_layers"] = (
             combined_config["problem_scale"]
             - combined_config["unet_bottleneck_dim"]
-            + 1
         )
 
         # Resolve paths to absolute, matching Config() behavior
