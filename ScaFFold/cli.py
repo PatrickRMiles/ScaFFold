@@ -193,8 +193,7 @@ def main():
 
         # Recalculate unet_layers to capture any CLI overrides
         combined_config["unet_layers"] = (
-            combined_config["problem_scale"]
-            - combined_config["unet_bottleneck_dim"]
+            combined_config["problem_scale"] - combined_config["unet_bottleneck_dim"]
         )
 
         # Resolve paths to absolute, matching Config() behavior
