@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 
+import math
 import torch
 import torch.nn.functional as F
 from distconv import DCTensor
@@ -99,7 +100,7 @@ def evaluate(
             global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh)
 
             # Divide by total global voxels to get the mean CE Loss
-            global_total_voxels = local_labels.numel() * np.prod(
+            global_total_voxels = local_labels.numel() * math.prod(
                 parallel_strategy.num_shards
             )
             CE_loss = global_ce_sum / global_total_voxels
