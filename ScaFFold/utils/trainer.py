@@ -355,7 +355,9 @@ class PyTorchTrainer(BaseTrainer):
             self.log.info(f"Running {warmup_epochs} warmup epoch(s)")
 
             for _ in range(warmup_epochs):
-                for batch in self.train_loader:
+                for i, batch in enumerate(self.train_loader):
+                    self.log.debug(f"  warmup: batch {i} / {len(self.train_loader)}")
+                    batch_t_start = time.time()
                     # Load initial samples and labels
                     images, true_masks = batch["image"], batch["mask"]
 
@@ -397,8 +399,9 @@ class PyTorchTrainer(BaseTrainer):
                         enabled=self.config.torch_amp,
                     ):
                         # Forward on DCTensor
+                        self.log.debug(f"  warmup: running forward pass")
                         masks_pred_dc = self.model(images_dc)
-                        self.log.debug(f"forward pass complete")
+                        self.log.debug(f"  warmup: forward pass complete")
 
                         # Extract the underlying PyTorch local tensors
                         local_preds = masks_pred_dc
@@ -407,15 +410,15 @@ class PyTorchTrainer(BaseTrainer):
                         # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
                         local_labels = local_labels_5d.squeeze(1)
                         if self.world_rank == 0:
-                            self.log.debug(f"Local Preds Shape: {local_preds.shape}")
+                            self.log.debug(f"  warmup: Local Preds Shape: {local_preds.shape}")
                             # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
-                            self.log.debug(f"Local Labels Shape: {local_labels.shape}")
+                            self.log.debug(f"  warmup: Local Labels Shape: {local_labels.shape}")
                             # Should be something like [1, 128, 128, 64]
 
                         # --- SHARDED LOSS CALCULATION ---
                         current_mem = torch.cuda.memory_allocated() / (1024**3)
                         self.log.debug(
-                            f"Calculating sharded loss. Mem: {current_mem:.2f} GB."
+                            f"  warmup: Calculating sharded loss. Mem: {current_mem:.2f} GB."
                         )
 
                         # 1. Sharded Cross Entropy
@@ -451,16 +454,15 @@ class PyTorchTrainer(BaseTrainer):
                         loss = loss_ce + loss_dice
 
                     self.log.debug(
-                        f"loss calculation complete. Proceeding to backward pass"
+                        f"  warmup: loss calculation complete. Proceeding to backward pass"
                     )
 
                     # Backward pass
                     self.grad_scaler.scale(loss).backward()
-                    self.log.debug(f"backward pass complete. Stepping optimizer")
+                    self.log.debug(f"  warmup: backward pass complete. Stepping optimizer")
 
                     self.grad_scaler.step(self.optimizer)
                     self.grad_scaler.update()
-                    self.optimizer.zero_grad(set_to_none=True)
 
                     # Free memory aggressively
                     del images_dc, true_masks_dc, masks_pred_dc
@@ -477,12 +479,14 @@ class PyTorchTrainer(BaseTrainer):
                         peak_reserved = torch.cuda.max_memory_reserved() / (1024**3)
                         self.log.debug(
                             f"[MEM-PEAK] Peak alloc: {peak_alloc:.2f} GiB | Peak reserved: {peak_reserved:.2f} GiB",
-                            flush=True,
                         )
+                    batch_t_end = time.time()
+                    self.log.debug(f"  warmup: batch {i} completed in {batch_t_end - batch_t_start} seconds")
 
             # Nuke any accumulated grads so the first real step starts clean
             for p in self.model.parameters():
                 p.grad = None
+            self.optimizer.zero_grad(set_to_none=True)
             torch.distributed.barrier()
             end_code_region("warmup")
             self.log.info(f"Done warmup. Took {int(time.time() - start_warmup)}s")
