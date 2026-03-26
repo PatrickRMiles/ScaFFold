@@ -141,6 +141,11 @@ def main():
         "--batch-size", type=int, nargs="+", help="Batch sizes for each volume size."
     )
     benchmark_parser.add_argument(
+        "--dataloader-num-workers",
+        type=int,
+        help="Number of DataLoader worker processes per rank.",
+    )
+    benchmark_parser.add_argument(
         "--optimizer",
         type=str,
         choices=["ADAM", "RMSProp"],
