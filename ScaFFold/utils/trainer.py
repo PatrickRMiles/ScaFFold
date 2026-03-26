@@ -342,7 +342,7 @@ class PyTorchTrainer(BaseTrainer):
                         device=self.device,
                         dtype=torch.float32,
                         memory_format=torch.channels_last_3d,
-                        non_blocking=False,
+                        non_blocking=True,
                     )
                     images_dc = DCTensor.distribute(images, ps)
 
