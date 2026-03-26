@@ -12,11 +12,11 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 
+import math
 import os
 import socket
 import sys
 import time
-import math
 from argparse import Namespace
 
 import numpy as np
