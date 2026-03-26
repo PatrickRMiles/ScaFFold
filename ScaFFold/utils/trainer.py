@@ -410,9 +410,13 @@ class PyTorchTrainer(BaseTrainer):
                         # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
                         local_labels = local_labels_5d.squeeze(1)
                         if self.world_rank == 0:
-                            self.log.debug(f"  warmup: Local Preds Shape: {local_preds.shape}")
+                            self.log.debug(
+                                f"  warmup: Local Preds Shape: {local_preds.shape}"
+                            )
                             # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
-                            self.log.debug(f"  warmup: Local Labels Shape: {local_labels.shape}")
+                            self.log.debug(
+                                f"  warmup: Local Labels Shape: {local_labels.shape}"
+                            )
                             # Should be something like [1, 128, 128, 64]
 
                         # --- SHARDED LOSS CALCULATION ---
@@ -459,7 +463,9 @@ class PyTorchTrainer(BaseTrainer):
 
                     # Backward pass
                     self.grad_scaler.scale(loss).backward()
-                    self.log.debug(f"  warmup: backward pass complete. Stepping optimizer")
+                    self.log.debug(
+                        f"  warmup: backward pass complete. Stepping optimizer"
+                    )
 
                     self.grad_scaler.step(self.optimizer)
                     self.grad_scaler.update()
@@ -481,7 +487,9 @@ class PyTorchTrainer(BaseTrainer):
                             f"[MEM-PEAK] Peak alloc: {peak_alloc:.2f} GiB | Peak reserved: {peak_reserved:.2f} GiB",
                         )
                     batch_t_end = time.time()
-                    self.log.debug(f"  warmup: batch {i} completed in {batch_t_end - batch_t_start} seconds")
+                    self.log.debug(
+                        f"  warmup: batch {i} completed in {batch_t_end - batch_t_start} seconds"
+                    )
 
             # Nuke any accumulated grads so the first real step starts clean
             for p in self.model.parameters():
