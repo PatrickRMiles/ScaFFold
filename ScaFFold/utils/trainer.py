@@ -323,92 +323,117 @@ class PyTorchTrainer(BaseTrainer):
         except Exception as e:
             self.log.warning(f"Failed to truncate stats file: {e}")
 
+    def prepare_training(self):
+        """Prepare checkpoints, resume state, and output files before training."""
+        self.cleanup_or_resume()
+
+    def warmup(self):
+        """Run warmup iterations before the main training loop."""
+        warmup_batches = self.config.warmup_batches
+        if warmup_batches <= 0:
+            return
+
+        ps = getattr(self.config, "_parallel_strategy", None)
+        if ps is None:
+            raise RuntimeError(
+                "ParallelStrategy not found in config. Set config._parallel_strategy when wrapping model with DistConvDDP."
+            )
+
+        if self.config.dist:
+            self.train_loader.sampler.set_epoch(0)
+
+        # Match the main training path as closely as possible.
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=False)
+        start_warmup = time.time()
+        max_batches = min(warmup_batches, len(self.train_loader))
+        self.log.info(f"Running {max_batches} warmup batch(es) per rank")
+
+        for batch_idx, batch in enumerate(self.train_loader):
+            if batch_idx >= max_batches:
+                break
+
+            images, true_masks = batch["image"], batch["mask"]
+
+            images = images.to(
+                device=self.device,
+                dtype=torch.float32,
+                memory_format=torch.channels_last_3d,
+                non_blocking=True,
+            )
+            true_masks = true_masks.to(
+                device=self.device, dtype=torch.long, non_blocking=True
+            ).contiguous()
+
+            # Replicate batch across dc mesh, shard batch across ddp mesh.
+            images_dp = distribute_tensor(
+                images, ps.device_mesh, placements=[Shard(0), Replicate()]
+            ).to_local()
+            true_masks_dp = distribute_tensor(
+                true_masks,
+                ps.device_mesh,
+                placements=[Shard(0), Replicate()],
+            ).to_local()
+
+            with torch.autocast(
+                self.device.type if self.device.type != "mps" else "cpu",
+                enabled=self.config.torch_amp,
+            ):
+                dcx = DCTensor.distribute(images_dp, ps)
+                dcy = self.model(dcx)
+                masks_pred = dcy.to_ddp()
+
+                true_masks_ddp = (
+                    DTensor.from_local(
+                        true_masks_dp,
+                        device_mesh=ps.device_mesh[f"dc{self.config.shard_dim + 2}"],
+                        placements=[Replicate()],
+                    )
+                    .redistribute(
+                        device_mesh=ps.device_mesh[f"dc{self.config.shard_dim + 2}"],
+                        placements=[Shard(0)],
+                    )
+                    .to_local()
+                )
+
+                if self.config.n_categories + 1 == 1:
+                    loss = self.criterion(
+                        masks_pred.squeeze(1), true_masks_ddp.float()
+                    )
+                    loss += dice_loss(
+                        F.sigmoid(masks_pred.squeeze(1)),
+                        true_masks_ddp.float(),
+                        multiclass=False,
+                    )
+                else:
+                    CE_loss = self.criterion(masks_pred, true_masks_ddp)
+                    masks_pred_softmax = F.softmax(masks_pred, dim=1).float()
+                    true_masks_onehot = (
+                        F.one_hot(true_masks_ddp, self.config.n_categories + 1)
+                        .permute(0, 4, 1, 2, 3)
+                        .float()
+                    )
+                    train_dice_curr = dice_loss(
+                        masks_pred_softmax,
+                        true_masks_onehot,
+                        multiclass=True,
+                    )
+                    loss = CE_loss + train_dice_curr
+
+                # Fine as long as we don't step/update
+                self.grad_scaler.scale(loss).backward()
+
+        # Nuke any accumulated grads so the first real step starts clean
+        for p in self.model.parameters():
+            p.grad = None
+        if self.config.dist:
+            torch.distributed.barrier()
+        self.log.info(f"Done warmup. Took {int(time.time() - start_warmup)}s")
+
     def train(self):
         """
         Execute model training
         """
-
-        self.cleanup_or_resume()
-
-        warmup_epochs = self.config.warmup_epochs
-        if warmup_epochs > 0:
-            begin_code_region("warmup")
-            # Keep BN/Dropout from changing behavior/statistics
-            self.model.eval()
-            start_warmup = time.time()
-            self.log.info(f"Running {warmup_epochs} warmup epoch(s)")
-
-            ps = getattr(self.config, "_parallel_strategy", None)
-
-            for _ in range(warmup_epochs):
-                for batch in self.train_loader:
-                    images, true_masks = batch["image"], batch["mask"]
-
-                    images = images.to(
-                        device=self.device,
-                        dtype=torch.float32,
-                        memory_format=torch.channels_last_3d,
-                        non_blocking=True,
-                    )
-                    images_dc = DCTensor.distribute(images, ps)
-
-                    true_masks = true_masks.to(
-                        device=self.device, dtype=torch.long, non_blocking=True
-                    )
-
-                    with torch.autocast(
-                        self.device.type if self.device.type != "mps" else "cpu",
-                        enabled=self.config.torch_amp,
-                    ):
-                        # Forward on DCTensor
-                        masks_pred_dc = self.model(images_dc)
-
-                        # Convert predictions for loss
-                        if isinstance(ps.num_shards, tuple) and len(ps.num_shards) == 1:
-                            n_shards = ps.num_shards[0]
-                        else:
-                            n_shards = ps.num_shards
-                        if images.size(0) < n_shards:
-                            # For small batches (e.g., N=1 with dc_num_shards=2), replicate outputs
-                            masks_pred = masks_pred_dc.to_replicate()
-                            labels_for_loss = true_masks
-                        else:
-                            # Otherwise, shard labels across batch dim to match to_ddp layout
-                            masks_pred = masks_pred_dc.to_ddp()
-                            dt_labels = distribute_tensor(
-                                true_masks,
-                                device_mesh=ps.device_mesh[
-                                    f"dc{self.config.shard_dim + 2}"
-                                ],
-                                placements=[Shard(0)],
-                            )
-                            labels_for_loss = dt_labels.to_local()
-
-                        CE_loss = self.criterion(masks_pred, labels_for_loss)
-
-                        # Calculate the train dice loss
-                        masks_pred_softmax = F.softmax(masks_pred, dim=1).float()
-                        true_masks_onehot = (
-                            F.one_hot(labels_for_loss, self.config.n_categories + 1)
-                            .permute(0, 4, 1, 2, 3)
-                            .float()
-                        )
-                        train_dice_curr = dice_loss(
-                            masks_pred_softmax,
-                            true_masks_onehot,
-                            multiclass=True,
-                        )
-                        loss = CE_loss + train_dice_curr
-
-                        # Fine as long as we don't step/update
-                        self.grad_scaler.scale(loss).backward()
-
-            # Nuke any accumulated grads so the first real step starts clean
-            for p in self.model.parameters():
-                p.grad = None
-            torch.distributed.barrier()
-            end_code_region("warmup")
-            self.log.info(f"Done warmup. Took {int(time.time() - start_warmup)}s")
 
         epoch = 1
         dice_score_train = 0
