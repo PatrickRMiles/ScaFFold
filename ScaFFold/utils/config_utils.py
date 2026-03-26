@@ -103,5 +103,5 @@ def load_config(file_path: str, config_type: str):
         return RunConfig(config_dict)
     else:
         raise ValueError(
-            f"Invalid config type specified: {type}. Must be either 'sweep' or 'run'"
+            f"Invalid config_type specified: {type}. Must be either 'sweep' or 'run'"
         )
