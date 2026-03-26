@@ -73,8 +73,8 @@ class Config:
         self.target_dice = config_dict["target_dice"]
         self.checkpoint_interval = config_dict["checkpoint_interval"]
 
-        self.dc_num_shards = _ensure_tuple(config_dict.get("dc_num_shards", (1, 1, 1)))
-        self.dc_shard_dims = _ensure_tuple(config_dict.get("dc_shard_dims", (2, 3, 4)))
+        self.dc_num_shards = config_dict["dc_num_shards"]
+        self.dc_shard_dims = config_dict["dc_shard_dims"]
         self.dc_total_shards = math.prod(self.dc_num_shards)
         # Safety Check: Length mismatch
         if len(self.dc_num_shards) != len(self.dc_shard_dims):
@@ -113,24 +113,3 @@ def load_config(file_path: str, config_type: str):
         raise ValueError(
             f"Invalid config type specified: {type}. Must be either 'sweep' or 'run'"
         )
-
-
-def _ensure_tuple(val):
-    """
-    Ensures the input value is converted to a tuple of integers.
-    Handles: int, list, tuple, and string representations like "[2,2]" or "2,2".
-    """
-    if val is None:
-        return (1,)  # Default safety
-    if isinstance(val, (list, tuple)):
-        return tuple(int(i) for i in val)
-    if isinstance(val, str):
-        # Handle cases where user might type literal "(2, 2, 2)" in YAML or "2,2" in CLI
-        val = val.strip("()[]").split(",")
-        return tuple(int(i.strip()) for i in val if i.strip())
-    # Fallback for single integer
-    return (
-        1,
-        1,
-        int(val),
-    )
