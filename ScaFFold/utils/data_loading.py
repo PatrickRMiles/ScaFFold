@@ -127,9 +127,11 @@ class BasicDataset(Dataset):
             mask = self._prepare_legacy_mask(self.mask_values, mask)
 
         return {
-            "image": torch.from_numpy(img),
-            "mask": torch.from_numpy(mask),
+            "image": torch.from_numpy(img).contiguous().float(),
+            "mask": torch.from_numpy(mask).contiguous().long(),
         }
+        
+
 
 
 class FractalDataset(BasicDataset):
