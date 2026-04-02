@@ -73,6 +73,9 @@ class BaseTrainer:
         self.criterion = None
         self.global_step = 0
         self.start_epoch = -1
+        self.ps = None  # DistConv ParallelStrategy
+        self.spatial_mesh = None  # Spatial mesh for use w/ DistConv
+        self.ddp_placements = None  # DDP placements for use w/ DistConv
 
         self.checkpoint_path_absolute = str(
             self.config.run_dir + "/" + self.config.checkpoint_dir
@@ -204,10 +207,6 @@ class PyTorchTrainer(BaseTrainer):
             # Check config for async setting, default to False
             async_save=getattr(self.config, "async_save", False),
         )
-
-        self.ps = None  # DistConv ParallelStrategy
-        self.spatial_mesh = None  # Spatial mesh for use w/ DistConv
-        self.ddp_placements = None  # DDP placements for use w/ DistConv
 
     def cleanup_or_resume(self):
         """
