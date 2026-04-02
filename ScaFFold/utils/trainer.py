@@ -326,7 +326,6 @@ class PyTorchTrainer(BaseTrainer):
         tensor_memory_gb = tensor_memory_bytes / (1024**3)
         self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
 
-
     def prepare_training(self):
         """Prepare checkpoints, resume state, and output files before training."""
         self.cleanup_or_resume()
@@ -372,9 +371,7 @@ class PyTorchTrainer(BaseTrainer):
                 non_blocking=True,
             )
             true_masks = true_masks.to(
-                device=self.device,
-                dtype=torch.long,
-                non_blocking=True
+                device=self.device, dtype=torch.long, non_blocking=True
             ).contiguous()
 
             # Add a dummy channel dimension to get 5D [B, 1, D, H, W]
@@ -410,9 +407,7 @@ class PyTorchTrainer(BaseTrainer):
                 # Remove the dummy channel dimension so CE Loss is happy [B, D, H, W]
                 local_labels = local_labels_5d.squeeze(1)
                 if self.world_rank == 0:
-                    self.log.debug(
-                        f"  warmup: Local Preds Shape: {local_preds.shape}"
-                    )
+                    self.log.debug(f"  warmup: Local Preds Shape: {local_preds.shape}")
                     # Should be something like [1, 6, 128, 128, 64] if sharding Width by 2
                     self.log.debug(
                         f"  warmup: Local Labels Shape: {local_labels.shape}"
@@ -431,9 +426,7 @@ class PyTorchTrainer(BaseTrainer):
                 )
 
                 # Pass the spatial_mesh directly
-                global_ce_sum = SpatialAllReduce.apply(
-                    local_ce_sum, spatial_mesh
-                )
+                global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh)
 
                 global_total_voxels = local_labels.numel() * math.prod(
                     self.config.dc_num_shards
@@ -443,9 +436,7 @@ class PyTorchTrainer(BaseTrainer):
                 # 2. Sharded Dice Loss
                 local_preds_softmax = F.softmax(local_preds, dim=1).float()
                 local_labels_one_hot = (
-                    F.one_hot(
-                        local_labels, num_classes=self.config.n_categories + 1
-                    )
+                    F.one_hot(local_labels, num_classes=self.config.n_categories + 1)
                     .permute(0, 4, 1, 2, 3)
                     .float()
                 )
@@ -464,12 +455,8 @@ class PyTorchTrainer(BaseTrainer):
             # Backward pass
             self.grad_scaler.scale(loss).backward()
             self.grad_scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), max_norm=1.0
-            )
-            self.log.debug(
-                f"  warmup: backward pass complete. Stepping optimizer"
-            )
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.log.debug(f"  warmup: backward pass complete. Stepping optimizer")
 
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
