@@ -24,8 +24,8 @@ import psutil
 import torch
 import torch.distributed as dist
 import yaml
-from distconv import DCTensor, DistConvDDP, ParallelStrategy
-from torch.nn.parallel import DistributedDataParallel as DDP
+from distconv import DistConvDDP, ParallelStrategy
+from torch.distributed.tensor import Replicate, Shard
 
 from ScaFFold.datagen.get_dataset import get_dataset
 from ScaFFold.unet import UNet
