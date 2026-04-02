@@ -66,12 +66,7 @@ class Config:
         self.loss_freq = config_dict["loss_freq"]
         self.checkpoint_dir = config_dict["checkpoint_dir"]
         self.normalize = config_dict["normalize"]
-        warmup_batches = config_dict.get("warmup_batches")
-        if warmup_batches is None:
-            legacy_warmup_epochs = config_dict.get("warmup_epochs", 0)
-            warmup_batches = legacy_warmup_epochs if legacy_warmup_epochs > 0 else 1
-        self.warmup_batches = warmup_batches
-        self.warmup_epochs = config_dict.get("warmup_epochs", 0)
+        self.warmup_batches = config_dict["warmup_batches"]
         self.dataset_reuse_enforce_commit_id = config_dict[
             "dataset_reuse_enforce_commit_id"
         ]
