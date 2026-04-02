@@ -329,10 +329,6 @@ class PyTorchTrainer(BaseTrainer):
         tensor_memory_gb = tensor_memory_bytes / (1024**3)
         self.log.info(f"{tensor_label} size on GPU: {tensor_memory_gb:.2f} GB")
 
-    def prepare_training(self):
-        """Prepare checkpoints, resume state, and output files before training."""
-        self.cleanup_or_resume()
-
     def warmup(self):
         """Run warmup iterations before the main training loop."""
         warmup_batches = self.config.warmup_batches
