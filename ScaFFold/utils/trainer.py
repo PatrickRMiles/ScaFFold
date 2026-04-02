@@ -379,8 +379,8 @@ class PyTorchTrainer(BaseTrainer):
             ).to_local()
 
             # Spatial sharding via DistConv
-            images_dc = DCTensor.distribute(images_dp, ps)
-            true_masks_dc = DCTensor.distribute(true_masks_dp, ps)
+            images_dc = DCTensor.distribute(images_dp, self.ps)
+            true_masks_dc = DCTensor.distribute(true_masks_dp, self.ps)
             self._get_memsize(images_dc, "Sharded image", self.config.verbose)
 
             with torch.autocast(
