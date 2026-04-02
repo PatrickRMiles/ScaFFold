@@ -131,7 +131,7 @@ class BaseTrainer:
         self.create_sampler()
 
         loader_args = dict(
-            batch_size=self.config.batch_size, num_workers=4, pin_memory=True
+            batch_size=self.config.batch_size, num_workers=1, pin_memory=True
         )
         self.log.debug(
             f"dataloader num_workers={loader_args['num_workers']}, os.cpu_count()={os.cpu_count()}, self.world_size={self.world_size} "
@@ -656,7 +656,6 @@ class PyTorchTrainer(BaseTrainer):
                         gather_and_print_mem(self.log, "post_backward")
 
                         begin_code_region("step_and_update")
-
                         self.grad_scaler.unscale_(self.optimizer)
                         torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(), max_norm=1.0
