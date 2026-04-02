@@ -72,8 +72,6 @@ class Config:
             warmup_batches = legacy_warmup_epochs if legacy_warmup_epochs > 0 else 1
         self.warmup_batches = warmup_batches
         self.warmup_epochs = config_dict.get("warmup_epochs", 0)
-        self.num_shards = config_dict["num_shards"]
-        self.shard_dim = config_dict["shard_dim"]
         self.dataset_reuse_enforce_commit_id = config_dict[
             "dataset_reuse_enforce_commit_id"
         ]
