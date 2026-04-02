@@ -340,7 +340,6 @@ class PyTorchTrainer(BaseTrainer):
         if warmup_batches <= 0:
             return
 
-
         if self.config.dist:
             self.train_loader.sampler.set_epoch(0)
 
@@ -629,7 +628,9 @@ class PyTorchTrainer(BaseTrainer):
 
                             # Compute sharded dice using new function
                             dice_scores = compute_sharded_dice(
-                                local_preds_softmax, local_labels_one_hot, self.spatial_mesh
+                                local_preds_softmax,
+                                local_labels_one_hot,
+                                self.spatial_mesh,
                             )
                             loss_dice = 1.0 - dice_scores.mean()
 
