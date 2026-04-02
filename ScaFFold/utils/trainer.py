@@ -205,6 +205,10 @@ class PyTorchTrainer(BaseTrainer):
             async_save=getattr(self.config, "async_save", False),
         )
 
+        self.ps = None  # DistConv ParallelStrategy
+        self.spatial_mesh = None  # Spatial mesh for use w/ DistConv
+        self.ddp_placements = None  # DDP placements for use w/ DistConv
+
     def cleanup_or_resume(self):
         """
         Clean up existing train stats and checkpoints,
@@ -336,17 +340,6 @@ class PyTorchTrainer(BaseTrainer):
         if warmup_batches <= 0:
             return
 
-        ps = getattr(self.config, "_parallel_strategy", None)
-        if ps is None:
-            raise RuntimeError(
-                "ParallelStrategy not found in config. Set config._parallel_strategy when wrapping model with DistConvDDP."
-            )
-        # Get the process group for spatial sharding mesh
-        spatial_mesh = ps.device_mesh[ps.distconv_dim_names]
-
-        # Get placements for DDP sharding
-        num_spatial_dims = len(ps.shard_dim)
-        ddp_placements = [Shard(0)] + [Replicate()] * num_spatial_dims
 
         if self.config.dist:
             self.train_loader.sampler.set_epoch(0)
@@ -379,11 +372,11 @@ class PyTorchTrainer(BaseTrainer):
 
             # Data parallel sharding
             images_dp = DTensor.from_local(
-                images, ps.device_mesh, placements=ddp_placements
+                images, ps.device_mesh, placements=self.ddp_placements
             ).to_local()
 
             true_masks_dp = DTensor.from_local(
-                true_masks, ps.device_mesh, placements=ddp_placements
+                true_masks, ps.device_mesh, placements=self.ddp_placements
             ).to_local()
 
             # Spatial sharding via DistConv
@@ -426,7 +419,7 @@ class PyTorchTrainer(BaseTrainer):
                 )
 
                 # Pass the spatial_mesh directly
-                global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh)
+                global_ce_sum = SpatialAllReduce.apply(local_ce_sum, self.spatial_mesh)
 
                 global_total_voxels = local_labels.numel() * math.prod(
                     self.config.dc_num_shards
@@ -441,7 +434,7 @@ class PyTorchTrainer(BaseTrainer):
                     .float()
                 )
                 dice_scores = compute_sharded_dice(
-                    local_preds_softmax, local_labels_one_hot, spatial_mesh
+                    local_preds_softmax, local_labels_one_hot, self.spatial_mesh
                 )
                 loss_dice = 1.0 - dice_scores.mean()
 
@@ -479,7 +472,7 @@ class PyTorchTrainer(BaseTrainer):
                 )
             batch_t_end = time.time()
             self.log.debug(
-                f"  warmup: batch {i} completed in {batch_t_end - batch_t_start} seconds"
+                f"  warmup: batch {batch_idx} completed in {batch_t_end - start_warmup} seconds"
             )
 
         # Nuke any accumulated grads so the first real step starts clean
@@ -556,11 +549,11 @@ class PyTorchTrainer(BaseTrainer):
 
                         # Data parallel sharding
                         images_dp = DTensor.from_local(
-                            images, ps.device_mesh, placements=ddp_placements
+                            images, ps.device_mesh, placements=self.ddp_placements
                         ).to_local()
 
                         true_masks_dp = DTensor.from_local(
-                            true_masks, ps.device_mesh, placements=ddp_placements
+                            true_masks, ps.device_mesh, placements=self.ddp_placements
                         ).to_local()
 
                         # Delete source tensors immediately after use to keep memory down
@@ -615,7 +608,7 @@ class PyTorchTrainer(BaseTrainer):
 
                             # Pass the spatial_mesh directly
                             global_ce_sum = SpatialAllReduce.apply(
-                                local_ce_sum, spatial_mesh
+                                local_ce_sum, self.spatial_mesh
                             )
 
                             global_total_voxels = local_labels.numel() * math.prod(
@@ -636,7 +629,7 @@ class PyTorchTrainer(BaseTrainer):
 
                             # Compute sharded dice using new function
                             dice_scores = compute_sharded_dice(
-                                local_preds_softmax, local_labels_one_hot, spatial_mesh
+                                local_preds_softmax, local_labels_one_hot, self.spatial_mesh
                             )
                             loss_dice = 1.0 - dice_scores.mean()
 

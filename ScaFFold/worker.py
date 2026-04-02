@@ -214,6 +214,11 @@ def main(kwargs_dict: dict = {}):
             torch.backends.cudnn.benchmark = False
             torch.use_deterministic_algorithms(True, warn_only=True)
         trainer = PyTorchTrainer(model, config, device, log)
+        trainer.ps = ps
+        trainer.spatial_mesh = ps.device_mesh[ps.distconv_dim_names]
+        num_spatial_dims = len(ps.shard_dim)
+        trainer.ddp_placements = [Shard(0)] + [Replicate()] * num_spatial_dims
+
     else:
         raise RuntimeError(
             "Invalid framework specified. Currently [torch] is the supported framework."
