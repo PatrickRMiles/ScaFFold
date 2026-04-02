@@ -28,6 +28,8 @@ from mpi4py import MPI
 from ScaFFold.utils.config_utils import Config
 
 DEFAULT_NP_DTYPE = np.float64
+# Masks are values 0 <= x <= n_categories
+MASK_DTYPE = np.uint8
 
 
 def load_np_ptcloud(path: str) -> np.ndarray:
@@ -179,9 +181,8 @@ def main(config: Dict):
                 0,
                 dtype=np.float32,
             )
-            # This contains values 0 <= x <= n_categories
             mask = np.full(
-                (config.vol_size, config.vol_size, config.vol_size), 0, dtype=np.uint8
+                (config.vol_size, config.vol_size, config.vol_size), 0, dtype=MASK_DTYPE
             )
 
             global_vol_idx = curr_vol[0]
@@ -227,8 +228,7 @@ def main(config: Dict):
             volume_to_save = np.ascontiguousarray(
                 volume.transpose((3, 0, 1, 2)), dtype=np.float32
             )
-            # This contains values 0 <= x <= n_categories
-            mask_to_save = np.ascontiguousarray(mask, dtype=np.uint8)
+            mask_to_save = np.ascontiguousarray(mask, dtype=MASK_DTYPE)
 
             vol_file = os.path.join(vol_path, subdir, f"{global_vol_idx}.npy")
             with open(vol_file, "wb") as f:
