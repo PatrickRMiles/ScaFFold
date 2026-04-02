@@ -131,7 +131,7 @@ class BaseTrainer:
         self.create_sampler()
 
         loader_args = dict(
-            batch_size=self.config.batch_size, num_workers=4, pin_memory=True
+            batch_size=self.config.batch_size, num_workers=1, pin_memory=True
         )
         self.log.debug(
             f"dataloader num_workers={loader_args['num_workers']}, os.cpu_count()={os.cpu_count()}, self.world_size={self.world_size} "
@@ -316,7 +316,6 @@ class PyTorchTrainer(BaseTrainer):
 
         except Exception as e:
             self.log.warning(f"Failed to truncate stats file: {e}")
-
 
     def _get_memsize(self, tensor, tensor_label: str, verbosity: int = 0):
         """Log size of tensor in memory"""
