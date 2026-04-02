@@ -552,7 +552,9 @@ class PyTorchTrainer(BaseTrainer):
                         ).to_local()
 
                         true_masks_dp = DTensor.from_local(
-                            true_masks, self.ps.device_mesh, placements=self.ddp_placements
+                            true_masks,
+                            self.ps.device_mesh,
+                            placements=self.ddp_placements,
                         ).to_local()
 
                         # Delete source tensors immediately after use to keep memory down
