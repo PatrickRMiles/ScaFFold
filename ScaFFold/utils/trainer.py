@@ -371,11 +371,11 @@ class PyTorchTrainer(BaseTrainer):
 
             # Data parallel sharding
             images_dp = DTensor.from_local(
-                images, ps.device_mesh, placements=self.ddp_placements
+                images, self.ps.device_mesh, placements=self.ddp_placements
             ).to_local()
 
             true_masks_dp = DTensor.from_local(
-                true_masks, ps.device_mesh, placements=self.ddp_placements
+                true_masks, self.ps.device_mesh, placements=self.ddp_placements
             ).to_local()
 
             # Spatial sharding via DistConv
@@ -548,11 +548,11 @@ class PyTorchTrainer(BaseTrainer):
 
                         # Data parallel sharding
                         images_dp = DTensor.from_local(
-                            images, ps.device_mesh, placements=self.ddp_placements
+                            images, self.ps.device_mesh, placements=self.ddp_placements
                         ).to_local()
 
                         true_masks_dp = DTensor.from_local(
-                            true_masks, ps.device_mesh, placements=self.ddp_placements
+                            true_masks, self.ps.device_mesh, placements=self.ddp_placements
                         ).to_local()
 
                         # Delete source tensors immediately after use to keep memory down
