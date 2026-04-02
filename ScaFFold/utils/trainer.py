@@ -496,9 +496,7 @@ class PyTorchTrainer(BaseTrainer):
 
                 # Timer and tracking variables
                 epoch_start_time = time.time()
-                train_dice_curr = 0
                 train_dice_total = 0
-                CE_loss = 0
                 epoch_loss = 0  # Accumulator for per-batch losses
 
                 # Set necessary modes/states
