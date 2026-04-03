@@ -222,8 +222,10 @@ def main(config: Dict):
 
             # Determine destination folder
             subdir = "validation" if global_vol_idx in val_indices else "training"
+            # Tensors must logically be channels-first, later we will change striding/storage to channels-last on GPU (metadata will always stay channels-first).
+            volume_channels_first = volume.transpose((3, 0, 1, 2))
             volume_to_save = np.ascontiguousarray(
-                volume.transpose((3, 0, 1, 2)), dtype=VOLUME_DTYPE
+                volume_channels_first, dtype=VOLUME_DTYPE
             )
             mask_to_save = np.ascontiguousarray(mask, dtype=MASK_DTYPE)
 
