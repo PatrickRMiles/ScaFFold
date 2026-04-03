@@ -29,7 +29,9 @@ from ScaFFold.utils.config_utils import Config
 
 DEFAULT_NP_DTYPE = np.float64
 # Masks are values 0 <= x <= n_categories
-MASK_DTYPE = np.uint8
+MASK_DTYPE = np.uint16
+# Volumes are 0 <= x <= 1
+VOLUME_DTYPE = np.float64
 
 
 def load_np_ptcloud(path: str) -> np.ndarray:
@@ -179,7 +181,7 @@ def main(config: Dict):
             volume = np.full(
                 (config.vol_size, config.vol_size, config.vol_size, 3),
                 0,
-                dtype=np.float32,
+                dtype=VOLUME_DTYPE,
             )
             mask = np.full(
                 (config.vol_size, config.vol_size, config.vol_size), 0, dtype=MASK_DTYPE
@@ -226,7 +228,7 @@ def main(config: Dict):
             # Determine destination folder
             subdir = "validation" if global_vol_idx in val_indices else "training"
             volume_to_save = np.ascontiguousarray(
-                volume.transpose((3, 0, 1, 2)), dtype=np.float32
+                volume.transpose((3, 0, 1, 2)), dtype=VOLUME_DTYPE
             )
             mask_to_save = np.ascontiguousarray(mask, dtype=MASK_DTYPE)
 
