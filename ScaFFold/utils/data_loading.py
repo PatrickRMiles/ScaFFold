@@ -22,8 +22,8 @@ import torch
 import yaml
 from torch.utils.data import Dataset
 
-from ScaFFold.utils.utils import customlog
 from ScaFFold.utils.data_types import MASK_DTYPE, VOLUME_DTYPE
+from ScaFFold.utils.utils import customlog
 
 DATASET_FORMAT_VERSION = 2
 LEGACY_DATASET_FORMAT_VERSION = 1
