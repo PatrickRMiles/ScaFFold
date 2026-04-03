@@ -26,12 +26,7 @@ import numpy as np
 from mpi4py import MPI
 
 from ScaFFold.utils.config_utils import Config
-
-DEFAULT_NP_DTYPE = np.float64
-# Masks are values 0 <= x <= n_categories
-MASK_DTYPE = np.uint16
-# Volumes are 0 <= x <= 1
-VOLUME_DTYPE = np.float64
+from ScaFFold.utils.data_types import DEFAULT_NP_DTYPE, MASK_DTYPE, VOLUME_DTYPE
 
 
 def load_np_ptcloud(path: str) -> np.ndarray:

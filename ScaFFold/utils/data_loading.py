@@ -23,6 +23,7 @@ import yaml
 from torch.utils.data import Dataset
 
 from ScaFFold.utils.utils import customlog
+from ScaFFold.utils.data_types import MASK_DTYPE, VOLUME_DTYPE
 
 DATASET_FORMAT_VERSION = 2
 LEGACY_DATASET_FORMAT_VERSION = 1
@@ -84,12 +85,12 @@ class BasicDataset(Dataset):
 
     @staticmethod
     def _prepare_legacy_image(img):
-        return np.ascontiguousarray(img.transpose((3, 0, 1, 2)), dtype=np.float32)
+        return np.ascontiguousarray(img.transpose((3, 0, 1, 2)), dtype=VOLUME_DTYPE)
 
     @staticmethod
     def _prepare_legacy_mask(mask_values, mask):
         remapped = np.zeros(
-            (mask.shape[0], mask.shape[1], mask.shape[2]), dtype=np.int64
+            (mask.shape[0], mask.shape[1], mask.shape[2]), dtype=MASK_DTYPE
         )
         for i, value in enumerate(mask_values):
             if mask.ndim == 3:
@@ -101,11 +102,11 @@ class BasicDataset(Dataset):
 
     @staticmethod
     def _prepare_optimized_image(img):
-        return np.ascontiguousarray(img, dtype=np.float32)
+        return np.ascontiguousarray(img, dtype=VOLUME_DTYPE)
 
     @staticmethod
     def _prepare_optimized_mask(mask):
-        return np.ascontiguousarray(mask, dtype=np.int64)
+        return np.ascontiguousarray(mask, dtype=MASK_DTYPE)
 
     def __getitem__(self, idx):
         name = self.ids[idx]
