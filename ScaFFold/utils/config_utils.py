@@ -50,6 +50,12 @@ class Config:
         self.n_instances_used_per_fractal = config_dict["n_instances_used_per_fractal"]
         self.scale = 1
         self.batch_size = config_dict["batch_size"]
+        self.dataloader_num_workers = int(
+            config_dict.get("dataloader_num_workers", 4)
+        )
+        self.dataloader_prefetch_factor = int(
+            config_dict.get("dataloader_prefetch_factor", 2)
+        )
         self.epochs = config_dict["epochs"]
         self.optimizer = config_dict["optimizer"]
         self.disable_scheduler = bool(config_dict["disable_scheduler"])

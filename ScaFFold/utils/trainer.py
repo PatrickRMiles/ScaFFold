@@ -134,11 +134,19 @@ class BaseTrainer:
         self.create_dataset()
         self.create_sampler()
 
+        num_workers = max(0, int(self.config.dataloader_num_workers))
         loader_args = dict(
-            batch_size=self.config.batch_size, num_workers=1, pin_memory=True
+            batch_size=self.config.batch_size,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=num_workers > 0,
         )
+        if num_workers > 0:
+            loader_args["prefetch_factor"] = max(
+                1, int(self.config.dataloader_prefetch_factor)
+            )
         self.log.debug(
-            f"dataloader num_workers={loader_args['num_workers']}, os.cpu_count()={os.cpu_count()}, self.world_size={self.world_size} "
+            f"dataloader num_workers={loader_args['num_workers']}, prefetch_factor={loader_args.get('prefetch_factor', 'n/a')}, persistent_workers={loader_args['persistent_workers']}, os.cpu_count()={os.cpu_count()}, self.world_size={self.world_size} "
         )
         self.train_loader = DataLoader(
             self.train_set, sampler=self.train_sampler, **loader_args

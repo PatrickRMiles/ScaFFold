@@ -141,6 +141,16 @@ def main():
         "--batch-size", type=int, nargs="+", help="Batch sizes for each volume size."
     )
     benchmark_parser.add_argument(
+        "--dataloader-num-workers",
+        type=int,
+        help="Number of DataLoader workers per rank.",
+    )
+    benchmark_parser.add_argument(
+        "--dataloader-prefetch-factor",
+        type=int,
+        help="Number of prefetched batches per worker when num_workers > 0.",
+    )
+    benchmark_parser.add_argument(
         "--warmup-batches",
         type=int,
         help="Number of warmup batches to run per rank before training.",
