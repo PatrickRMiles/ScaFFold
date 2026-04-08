@@ -228,14 +228,15 @@ def main(kwargs_dict: dict = {}):
     # Run the training
     #
     ranks_per_node = get_local_size()
+    begin_code_region("cleanup_or_resume")
+    trainer.cleanup_or_resume()
+    end_code_region("cleanup_or_resume")
+    begin_code_region("warmup")
+    trainer.warmup()
+    end_code_region("warmup")
     prof_ctx, TORCH_PERF_LOCAL = get_torch_context(ranks_per_node, rank)
     with prof_ctx as prof:
-        begin_code_region("cleanup_or_resume")
-        trainer.cleanup_or_resume()
-        end_code_region("cleanup_or_resume")
-        begin_code_region("warmup")
-        trainer.warmup()
-        end_code_region("warmup")
+        trainer.profiler = prof if TORCH_PERF_LOCAL else None
         begin_code_region("train")
         trainer.train()
         end_code_region("train")
