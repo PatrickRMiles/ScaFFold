@@ -182,7 +182,7 @@ class BaseTrainer:
         )
 
         self.log.info(
-            f"Optimizer: {self.optimizer}, Scheduler: {self.scheduler}, Gradient Scaler Enabled: {self.config.torch_amp}"
+            f"Optimizer: {self.optimizer}, Scheduler: {self.scheduler}, Gradient Scaler Enabled: {self.config.torch_amp}, Gradient Clip Max Norm: {self.config.gradient_clip_max_norm}"
         )
 
 
@@ -341,7 +341,7 @@ class PyTorchTrainer(BaseTrainer):
 
         # Match the main training path as closely as possible.
         self.model.train()
-        self.optimizer.zero_grad(set_to_none=False)
+        self.optimizer.zero_grad(set_to_none=True)
         start_warmup = time.time()
         max_batches = min(warmup_batches, len(self.train_loader))
         self.log.info(f"Running {max_batches} warmup batch(es) per rank")
@@ -442,8 +442,12 @@ class PyTorchTrainer(BaseTrainer):
 
             # Backward pass
             self.grad_scaler.scale(loss).backward()
-            self.grad_scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            if self.config.gradient_clip_max_norm > 0:
+                self.grad_scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    max_norm=self.config.gradient_clip_max_norm,
+                )
             self.log.debug(f"  warmup: backward pass complete. Stepping optimizer")
 
             self.grad_scaler.step(self.optimizer)
@@ -505,7 +509,7 @@ class PyTorchTrainer(BaseTrainer):
                     self.train_loader.sampler.set_epoch(epoch)
                     self.val_loader.sampler.set_epoch(epoch)
                 self.model.train()
-                self.optimizer.zero_grad(set_to_none=False)
+                self.optimizer.zero_grad(set_to_none=True)
 
                 estr = (
                     f"{epoch}"
@@ -643,14 +647,16 @@ class PyTorchTrainer(BaseTrainer):
                         gather_and_print_mem(self.log, "post_backward")
 
                         begin_code_region("step_and_update")
-                        self.grad_scaler.unscale_(self.optimizer)
-                        torch.nn.utils.clip_grad_norm_(
-                            self.model.parameters(), max_norm=1.0
-                        )
+                        if self.config.gradient_clip_max_norm > 0:
+                            self.grad_scaler.unscale_(self.optimizer)
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(),
+                                max_norm=self.config.gradient_clip_max_norm,
+                            )
                         self.grad_scaler.step(self.optimizer)
                         gather_and_print_mem(self.log, "after_optim_step")
                         self.grad_scaler.update()
-                        self.optimizer.zero_grad(set_to_none=False)
+                        self.optimizer.zero_grad(set_to_none=True)
                         end_code_region("step_and_update")
 
                         # Update the loss

@@ -25,6 +25,7 @@ datagen_from_scratch: 0            # If 1, delete existing fractals and instance
 train_from_scratch: 1              # If 1, delete existing train stats and checkpoint files. Keep 0 if want to restart runs where we left off.
 dist: 1                            # If 1, use torch DDP.
 torch_amp: 1                       # If 1, use mixed precision in training.
+gradient_clip_max_norm: 0.0        # Values > 0 enable gradient clipping. Set to 1.0 to match the previous default behavior.
 framework: "torch"                 # The DL framework to train with. Only valid option for now is "torch".
 checkpoint_dir: "checkpoints"      # Subfolder in which to save training checkpoints.
 loss_freq: 1                       # Number of epochs between logging the overall loss.
