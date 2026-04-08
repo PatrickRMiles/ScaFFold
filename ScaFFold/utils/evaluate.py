@@ -41,7 +41,7 @@ def evaluate(
     total_dice_score = 0.0
     processed_batches = 0
 
-    spatial_mesh = parallel_strategy.device_mesh[parallel_strategy.distconv_dim_names]
+    spatial_reduce_group = getattr(parallel_strategy, "spatial_reduce_group")
 
     if primary:
         print(
@@ -99,7 +99,7 @@ def evaluate(
 
             # --- 1. Sharded CE Loss ---
             local_ce_sum = F.cross_entropy(local_preds, local_labels, reduction="sum")
-            global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh)
+            global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_reduce_group)
 
             # Divide by total global voxels to get the mean CE Loss
             global_total_voxels = local_labels.numel() * math.prod(
@@ -109,13 +109,13 @@ def evaluate(
 
             # --- 2. Format Predictions & Labels (Strictly Multiclass) ---
             mask_pred_probs = F.softmax(local_preds, dim=1).float()
-            mask_true_onehot = (
-                F.one_hot(local_labels, n_categories + 1).permute(0, 4, 1, 2, 3).float()
-            )
 
             # Dice loss uses probabilities
             dice_score_probs = compute_sharded_dice(
-                mask_pred_probs, mask_true_onehot, spatial_mesh
+                mask_pred_probs,
+                local_labels,
+                spatial_reduce_group,
+                num_classes=n_categories + 1,
             )
             dice_loss_curr = 1.0 - dice_score_probs.mean()
 

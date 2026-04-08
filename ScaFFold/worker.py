@@ -216,6 +216,12 @@ def main(kwargs_dict: dict = {}):
         trainer = PyTorchTrainer(model, config, device, log)
         trainer.ps = ps
         trainer.spatial_mesh = ps.device_mesh[ps.distconv_dim_names]
+        trainer.spatial_reduce_group = (
+            trainer.spatial_mesh.get_group()
+            if trainer.spatial_mesh.ndim == 1
+            else trainer.spatial_mesh._flatten().get_group()
+        )
+        trainer.ps.spatial_reduce_group = trainer.spatial_reduce_group
         num_spatial_dims = len(ps.shard_dim)
         trainer.ddp_placements = [Shard(0)] + [Replicate()] * num_spatial_dims
 
