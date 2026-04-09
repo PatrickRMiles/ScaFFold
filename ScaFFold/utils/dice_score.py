@@ -64,11 +64,9 @@ def dice_loss(input: Tensor, target: Tensor, multiclass: bool = False):
 
 class SpatialAllReduce(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, spatial_mesh):
+    def forward(ctx, input, reduce_group):
         output = input.clone()
-        for mesh_dim in range(spatial_mesh.ndim):
-            pg = spatial_mesh.get_group(mesh_dim)
-            dist.all_reduce(output, op=dist.ReduceOp.SUM, group=pg)
+        dist.all_reduce(output, op=dist.ReduceOp.SUM, group=reduce_group)
         return output
 
     @staticmethod
@@ -79,28 +77,44 @@ class SpatialAllReduce(torch.autograd.Function):
 @annotate()
 def compute_sharded_dice(
     preds: torch.Tensor,
-    targets: torch.Tensor,
-    spatial_mesh,
+    labels: torch.Tensor,
+    reduce_group,
+    num_classes: int,
     epsilon: float = 1e-6,
 ):
     """
     Computes the globally sharded Dice score.
     Returns the raw score tensor of shape [Batch, Channels].
     """
-    assert preds.size() == targets.size(), (
-        f"Shape mismatch: {preds.size()} vs {targets.size()}"
-    )
     assert preds.dim() == 5, f"Expected 5D tensor, got {preds.dim()}D"
+    assert labels.dim() == 4, f"Expected 4D labels tensor, got {labels.dim()}D"
+    assert preds.size(0) == labels.size(0), (
+        f"Batch mismatch: {preds.size(0)} vs {labels.size(0)}"
+    )
+    assert preds.shape[2:] == labels.shape[1:], (
+        f"Spatial mismatch: {preds.shape} vs {labels.shape}"
+    )
 
-    sum_dim = (-1, -2, -3)  # D, H, W
+    batch_size = preds.size(0)
+    preds_flat = preds.reshape(batch_size, num_classes, -1)
+    labels_flat = labels.reshape(batch_size, -1).long()
 
-    local_inter = 2.0 * (preds * targets).sum(dim=sum_dim)
-    local_sets_sum_raw = preds.sum(dim=sum_dim) + targets.sum(dim=sum_dim)
+    pred_sums = preds_flat.sum(dim=2)
+    true_class_probs = preds_flat.gather(1, labels_flat.unsqueeze(1)).squeeze(1)
 
-    packed = torch.stack([local_inter, local_sets_sum_raw])
+    intersections = torch.zeros_like(pred_sums)
+    intersections.scatter_add_(1, labels_flat, true_class_probs)
+    intersections.mul_(2.0)
+
+    target_sums = torch.zeros_like(pred_sums)
+    target_sums.scatter_add_(
+        1, labels_flat, torch.ones_like(true_class_probs, dtype=preds.dtype)
+    )
+
+    packed = torch.stack([intersections, pred_sums + target_sums])
 
     # Global reduce across spatial mesh
-    packed_global = SpatialAllReduce.apply(packed, spatial_mesh)
+    packed_global = SpatialAllReduce.apply(packed, reduce_group)
 
     global_inter = packed_global[0]
     global_sets_sum_raw = packed_global[1]

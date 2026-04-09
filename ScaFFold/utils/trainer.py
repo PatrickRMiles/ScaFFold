@@ -75,6 +75,7 @@ class BaseTrainer:
         self.start_epoch = -1
         self.ps = None  # DistConv ParallelStrategy
         self.spatial_mesh = None  # Spatial mesh for use w/ DistConv
+        self.spatial_reduce_group = None  # Flattened spatial group for collectives
         self.ddp_placements = None  # DDP placements for use w/ DistConv
         self.profiler = None
 
@@ -414,7 +415,9 @@ class PyTorchTrainer(BaseTrainer):
                 )
 
                 # Pass the spatial_mesh directly
-                global_ce_sum = SpatialAllReduce.apply(local_ce_sum, self.spatial_mesh)
+                global_ce_sum = SpatialAllReduce.apply(
+                    local_ce_sum, self.spatial_reduce_group
+                )
 
                 global_total_voxels = local_labels.numel() * math.prod(
                     self.config.dc_num_shards
@@ -423,13 +426,11 @@ class PyTorchTrainer(BaseTrainer):
 
                 # 2. Sharded Dice Loss
                 local_preds_softmax = F.softmax(local_preds, dim=1).float()
-                local_labels_one_hot = (
-                    F.one_hot(local_labels, num_classes=self.config.n_categories + 1)
-                    .permute(0, 4, 1, 2, 3)
-                    .float()
-                )
                 dice_scores = compute_sharded_dice(
-                    local_preds_softmax, local_labels_one_hot, self.spatial_mesh
+                    local_preds_softmax,
+                    local_labels,
+                    self.spatial_reduce_group,
+                    num_classes=self.config.n_categories + 1,
                 )
                 loss_dice = 1.0 - dice_scores.mean()
 
@@ -455,7 +456,6 @@ class PyTorchTrainer(BaseTrainer):
                 local_preds,
                 local_labels,
                 local_preds_softmax,
-                local_labels_one_hot,
             )
             del loss_ce, loss_dice, loss, images_dp, true_masks_dp
 
@@ -603,7 +603,7 @@ class PyTorchTrainer(BaseTrainer):
 
                             # Pass the spatial_mesh directly
                             global_ce_sum = SpatialAllReduce.apply(
-                                local_ce_sum, self.spatial_mesh
+                                local_ce_sum, self.spatial_reduce_group
                             )
 
                             global_total_voxels = local_labels.numel() * math.prod(
@@ -613,20 +613,13 @@ class PyTorchTrainer(BaseTrainer):
 
                             # 2. Sharded Dice Loss
                             local_preds_softmax = F.softmax(local_preds, dim=1).float()
-                            local_labels_one_hot = (
-                                F.one_hot(
-                                    local_labels,
-                                    num_classes=self.config.n_categories + 1,
-                                )
-                                .permute(0, 4, 1, 2, 3)
-                                .float()
-                            )
 
                             # Compute sharded dice using new function
                             dice_scores = compute_sharded_dice(
                                 local_preds_softmax,
-                                local_labels_one_hot,
-                                self.spatial_mesh,
+                                local_labels,
+                                self.spatial_reduce_group,
+                                num_classes=self.config.n_categories + 1,
                             )
                             loss_dice = 1.0 - dice_scores.mean()
 
