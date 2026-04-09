@@ -38,8 +38,8 @@ def evaluate(
 ):
     net.eval()
     num_val_batches = len(dataloader)
-    total_dice_score = 0.0
-    processed_batches = 0
+    total_dice_score = torch.zeros((), device=device, dtype=torch.float64)
+    processed_batches = torch.zeros((), device=device, dtype=torch.float64)
 
     spatial_mesh = parallel_strategy.device_mesh[parallel_strategy.distconv_dim_names]
 
@@ -49,7 +49,7 @@ def evaluate(
         )
 
     with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
-        val_loss_epoch = 0.0
+        val_loss_epoch = torch.zeros((), device=device, dtype=torch.float64)
         for batch in tqdm(
             dataloader,
             total=num_val_batches,
@@ -125,15 +125,15 @@ def evaluate(
 
             # --- Combine and Accumulate ---
             loss = CE_loss + dice_loss_curr
-            val_loss_epoch += loss.item()
-            total_dice_score += batch_dice_score.item()
-            processed_batches += 1
+            val_loss_epoch += loss.detach().to(torch.float64)
+            total_dice_score += batch_dice_score.detach().to(torch.float64)
+            processed_batches += 1.0
 
     net.train()
 
-    val_loss_avg = val_loss_epoch / max(processed_batches, 1)
+    val_loss_avg = val_loss_epoch / processed_batches.clamp_min(1.0)
     if primary:
         print(
-            f"evaluate.py: dice_score={total_dice_score}, val_loss_epoch={val_loss_epoch}, val_loss_avg={val_loss_avg}, num_val_batches={processed_batches}"
+            f"evaluate.py: dice_score={total_dice_score.item()}, val_loss_epoch={val_loss_epoch.item()}, val_loss_avg={val_loss_avg.item()}, num_val_batches={int(processed_batches.item())}"
         )
     return total_dice_score, val_loss_epoch, val_loss_avg, processed_batches

@@ -485,7 +485,7 @@ class PyTorchTrainer(BaseTrainer):
         """
 
         epoch = 1
-        dice_score_train = 0
+        dice_score_train = 0.0
         with open(self.outfile_path, "a", newline="") as outfile:
             start = time.time()
             while dice_score_train < self.config.target_dice:
@@ -497,8 +497,12 @@ class PyTorchTrainer(BaseTrainer):
 
                 # Timer and tracking variables
                 epoch_start_time = time.time()
-                train_dice_total = 0
-                epoch_loss = 0  # Accumulator for per-batch losses
+                train_dice_total = torch.zeros(
+                    (), device=self.device, dtype=torch.float64
+                )
+                epoch_loss = torch.zeros(
+                    (), device=self.device, dtype=torch.float64
+                )  # Accumulator for per-batch losses
 
                 # Set necessary modes/states
                 if self.config.dist:
@@ -632,7 +636,9 @@ class PyTorchTrainer(BaseTrainer):
 
                             # 3. Combine Loss
                             loss = loss_ce + loss_dice
-                            train_dice_total += dice_scores[:, 1:].mean().item()
+                            train_dice_total += (
+                                dice_scores[:, 1:].mean().detach().to(torch.float64)
+                            )
 
                             end_code_region("calculate_loss")
 
@@ -658,14 +664,14 @@ class PyTorchTrainer(BaseTrainer):
                         pbar.update(images_dc.shape[0])
                         self.global_step += 1
                         # Stay on GPU
-                        epoch_loss += loss.detach()
+                        epoch_loss += loss.detach().to(torch.float64)
                         if self.profiler is not None:
                             self.profiler.step()
                         end_code_region("update_loss")
                     end_code_region("batch_loop")
 
                 # Calculate overall loss as average of per-batch loss
-                overall_loss = epoch_loss.item() / len(self.train_loader)
+                overall_loss = (epoch_loss / len(self.train_loader)).item()
 
                 #
                 # Evaluate model on validation set, update LR if necessary
@@ -680,13 +686,14 @@ class PyTorchTrainer(BaseTrainer):
                     self.config.n_categories,
                     self.config._parallel_strategy,
                 )
-                dice_info = torch.tensor([dice_sum, numbatch])
+                dice_info = torch.stack(
+                    [dice_sum, numbatch.to(dtype=dice_sum.dtype)], dim=0
+                )
                 if self.config.dist:
-                    dice_info = dice_info.to(device=self.device)
                     torch.distributed.all_reduce(
                         dice_info, op=torch.distributed.ReduceOp.SUM
                     )
-                val_score = dice_info[0].item() / max(dice_info[1].item(), 1)
+                val_score = (dice_info[0] / dice_info[1].clamp_min(1.0)).item()
                 if not self.config.disable_scheduler:
                     # The following is true when trying to overfit,
                     # in which case we only care about train loss
@@ -706,7 +713,7 @@ class PyTorchTrainer(BaseTrainer):
                 #
                 # Write out data for this epoch to train stats csv
                 #
-                train_dice = float(train_dice_total / len(self.train_loader))
+                train_dice = (train_dice_total / len(self.train_loader)).item()
                 self.log.info(
                     f" epoch {epoch} \
                             | train_dice_loss {train_dice:.6f} (type {type(train_dice)}) \
@@ -720,8 +727,8 @@ class PyTorchTrainer(BaseTrainer):
                                 str(epoch),
                                 str(epoch_loss.item()),
                                 str(overall_loss),
-                                str(val_loss_epoch),
-                                str(val_loss_avg),
+                                str(val_loss_epoch.item()),
+                                str(val_loss_avg.item()),
                                 str(train_dice),
                                 str(val_score),
                                 str(epoch_duration),
