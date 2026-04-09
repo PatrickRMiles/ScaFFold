@@ -146,6 +146,11 @@ def main():
         help="Number of warmup batches to run per rank before training.",
     )
     benchmark_parser.add_argument(
+        "--gradient-clip-max-norm",
+        type=float,
+        help="Clip gradients to this max norm. Values <= 0 disable clipping.",
+    )
+    benchmark_parser.add_argument(
         "--optimizer",
         type=str,
         choices=["ADAM", "RMSProp"],

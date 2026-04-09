@@ -63,6 +63,9 @@ class Config:
         self.learning_rate = config_dict["learning_rate"]
         self.variance_threshold = config_dict["variance_threshold"]
         self.torch_amp = bool(config_dict["torch_amp"])
+        self.gradient_clip_max_norm = float(
+            config_dict.get("gradient_clip_max_norm", 0.0)
+        )
         self.loss_freq = config_dict["loss_freq"]
         self.checkpoint_dir = config_dict["checkpoint_dir"]
         self.normalize = config_dict["normalize"]
