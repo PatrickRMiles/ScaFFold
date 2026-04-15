@@ -17,6 +17,9 @@ from contextlib import nullcontext
 
 CALI_PERF_ENV_VAR = "CALI_CONFIG"
 TORCH_PERF_ENV_VAR = "PROFILE_TORCH"
+TORCH_PROFILE_WAIT_STEPS = 5
+TORCH_PROFILE_WARMUP_STEPS = 2
+TORCH_PROFILE_ACTIVE_STEPS = 8
 
 _CALI_PERF_ENABLED = False
 TORCH_PERF_ENABLED = False
@@ -37,6 +40,7 @@ elif (
     try:
         from torch.profiler import ProfilerActivity
         from torch.profiler import profile as torchprofile
+        from torch.profiler import schedule as torchschedule
 
         TORCH_PERF_ENABLED = True
     except Exception:
@@ -92,12 +96,19 @@ def adiak_fini():
 
 def get_torch_context(ranks_per_node, rank):
     if TORCH_PERF_ENABLED:
-        TORCH_PERF_LOCAL = TORCH_PERF_ENABLED and (rank % ranks_per_node == 0)
+        # Restrict profiling to global rank 0 to minimize benchmark distortion.
+        TORCH_PERF_LOCAL = TORCH_PERF_ENABLED and rank == 0
         prof_ctx = (
             torchprofile(
                 activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
-                record_shapes=True,
-                with_stack=True,
+                schedule=torchschedule(
+                    wait=TORCH_PROFILE_WAIT_STEPS,
+                    warmup=TORCH_PROFILE_WARMUP_STEPS,
+                    active=TORCH_PROFILE_ACTIVE_STEPS,
+                    repeat=1,
+                ),
+                record_shapes=False,
+                with_stack=False,
             )
             if TORCH_PERF_LOCAL
             else nullcontext()

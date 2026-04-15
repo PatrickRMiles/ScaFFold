@@ -76,6 +76,7 @@ class BaseTrainer:
         self.ps = None  # DistConv ParallelStrategy
         self.spatial_mesh = None  # Spatial mesh for use w/ DistConv
         self.ddp_placements = None  # DDP placements for use w/ DistConv
+        self.profiler = None
 
         self.checkpoint_path_absolute = str(
             self.config.run_dir + "/" + self.config.checkpoint_dir
@@ -664,6 +665,8 @@ class PyTorchTrainer(BaseTrainer):
                         self.global_step += 1
                         # Stay on GPU
                         epoch_loss += loss.detach()
+                        if self.profiler is not None:
+                            self.profiler.step()
                         end_code_region("update_loss")
                     end_code_region("batch_loop")
 
