@@ -603,7 +603,9 @@ class PyTorchTrainer(BaseTrainer):
 
                             # 1. Sharded Cross Entropy
                             with torch.autocast(
-                                self.device.type if self.device.type != "mps" else "cpu",
+                                self.device.type
+                                if self.device.type != "mps"
+                                else "cpu",
                                 enabled=False,
                             ):
                                 local_ce_sum = F.cross_entropy(
