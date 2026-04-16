@@ -89,7 +89,11 @@ def evaluate(
             global_ce_sum = SpatialAllReduce.apply(local_ce_sum, spatial_mesh)
 
             # Divide by the actual global voxel count to handle uneven shards.
-            local_voxel_count = local_ce_sum.new_tensor(float(local_labels.numel()))
+            local_voxel_count = torch.tensor(
+                float(local_labels.numel()),
+                device=local_labels.device,
+                dtype=torch.float32,
+            )
             global_total_voxels = SpatialAllReduce.apply(
                 local_voxel_count, spatial_mesh
             )

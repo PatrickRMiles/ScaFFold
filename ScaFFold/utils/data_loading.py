@@ -181,11 +181,11 @@ class BasicDataset(Dataset):
 
     @staticmethod
     def _prepare_optimized_image(img):
-        return np.ascontiguousarray(img, dtype=VOLUME_DTYPE)
+        return np.array(img, dtype=VOLUME_DTYPE, copy=True, order="C")
 
     @staticmethod
     def _prepare_optimized_mask(mask):
-        return np.ascontiguousarray(mask, dtype=MASK_DTYPE)
+        return np.array(mask, dtype=MASK_DTYPE, copy=True, order="C")
 
     def _slice_image_array(self, img):
         if self.spatial_shard_spec is None:
