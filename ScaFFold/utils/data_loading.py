@@ -42,9 +42,7 @@ class SpatialShardSpec:
 
     def __post_init__(self):
         if not (
-            len(self.shard_dims)
-            == len(self.num_shards)
-            == len(self.shard_indices)
+            len(self.shard_dims) == len(self.num_shards) == len(self.shard_indices)
         ):
             raise ValueError(
                 "shard_dims, num_shards, and shard_indices must have matching lengths"
