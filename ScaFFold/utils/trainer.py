@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 
+# Standard library
 import math
 import os
 import shutil
@@ -22,6 +23,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from distconv import DCTensor
 from torch import optim
 from torch.utils.data import DataLoader
@@ -29,12 +31,10 @@ from tqdm import tqdm
 
 from ScaFFold.utils.checkpointing import CheckpointManager
 from ScaFFold.utils.data_loading import FractalDataset, SpatialShardSpec
-from ScaFFold.utils.data_types import AMP_DTYPE, VOLUME_DTYPE
-from ScaFFold.utils.dice_score import (
-    SpatialAllReduce,
-    compute_sharded_dice,
-)
+from ScaFFold.utils.data_types import AMP_DTYPE
+from ScaFFold.utils.dice_score import compute_sharded_dice
 from ScaFFold.utils.distributed import get_local_rank, get_world_rank, get_world_size
+from ScaFFold.utils.losses import compute_sharded_cross_entropy_loss
 
 # Local
 from ScaFFold.utils.evaluate import evaluate
@@ -72,6 +72,7 @@ class BaseTrainer:
         self.scheduler = None
         self.grad_scaler = None
         self.criterion = None
+        self.ce_class_weights = None
         self.global_step = 0
         self.start_epoch = -1
         self.ps = getattr(self.config, "_parallel_strategy", None)
@@ -183,6 +184,70 @@ class BaseTrainer:
                 "Reduce batch_size or adjust validation sharding."
             )
 
+    def _sample_ce_weight_indices(self):
+        """Pick a small, deterministic subset of masks to estimate CE weights."""
+        requested_samples = int(getattr(self.config, "ce_weight_num_samples", 8) or 8)
+        sample_count = min(max(requested_samples, 1), self.n_train)
+        if sample_count == self.n_train:
+            return list(range(self.n_train))
+
+        return torch.linspace(0, self.n_train - 1, steps=sample_count).long().tolist()
+
+    def _compute_ce_class_weights(self):
+        """
+        Estimate background vs foreground CE weights from a few training masks.
+
+        Background keeps its own inverse-frequency weight, and every non-zero
+        fractal class shares the foreground weight derived from the aggregate
+        non-empty voxel count.
+        """
+
+        num_classes = self.config.n_categories + 1
+        class_weights = torch.ones(num_classes, device=self.device, dtype=torch.float32)
+
+        if self.n_train == 0:
+            self.log.warning(
+                "Training set is empty while computing CE class weights. Falling back to uniform weights."
+            )
+            return class_weights
+
+        sample_indices = self._sample_ce_weight_indices()
+        sampled_class_counts = torch.zeros(num_classes, dtype=torch.long)
+
+        for sample_idx in sample_indices:
+            mask = self.train_set[sample_idx]["mask"]
+            sampled_class_counts += torch.bincount(
+                mask.reshape(-1), minlength=num_classes
+            )
+
+        # The dataset may already return only this rank's local spatial shard,
+        # so combine per-rank counts before deriving the global CE weights.
+        sampled_class_counts = sampled_class_counts.to(device=self.device)
+        if self.config.dist:
+            dist.all_reduce(sampled_class_counts, op=dist.ReduceOp.SUM)
+
+        background_voxels = int(sampled_class_counts[0].item())
+        foreground_voxels = int(sampled_class_counts[1:].sum().item())
+
+        if background_voxels > 0 and foreground_voxels > 0:
+            total_voxels = background_voxels + foreground_voxels
+            class_weights[0] = total_voxels / background_voxels
+            class_weights[1:] = total_voxels / foreground_voxels
+        else:
+            self.log.warning(
+                "Sampled masks did not contain both background and foreground voxels. Falling back to uniform CE weights."
+            )
+
+        if not self.config.dist or self.world_rank == 0:
+            self.log.info(
+                f"CE weights estimated from {len(sample_indices)} training masks "
+                f"(indices={sample_indices}): background_voxels={background_voxels} "
+                f"foreground_voxels={foreground_voxels} "
+                f"weights={class_weights.detach().cpu().tolist()}"
+            )
+
+        return class_weights
+
     def setup_training_components(self):
         """Set up the optimizer, scheduler, gradient scaler, and loss function."""
         # Set up optimizer
@@ -221,10 +286,12 @@ class BaseTrainer:
 
         # Set up loss function
         self.criterion = (
-            nn.CrossEntropyLoss()
+            nn.CrossEntropyLoss(weight=self._compute_ce_class_weights()).to(self.device)
             if self.config.n_categories + 1 > 1
-            else nn.BCEWithLogitsLoss()
+            else nn.BCEWithLogitsLoss().to(self.device)
         )
+        if isinstance(self.criterion, nn.CrossEntropyLoss):
+            self.ce_class_weights = self.criterion.weight
 
         self.log.info(
             f"Optimizer: {self.optimizer}, Scheduler: {self.scheduler}, AMP dtype: {self.amp_dtype}, Gradient Scaler Enabled: {self.use_grad_scaler}"
@@ -464,24 +531,15 @@ class PyTorchTrainer(BaseTrainer):
 
                 # Calculate CE and Dice loss in single precision for numerical stability.
                 with torch.autocast(**self._autocast_kwargs(enabled=False)):
-                    # Compute global CE loss from sharded CE loss
-                    local_ce_sum = F.cross_entropy(
-                        local_preds.float(), local_labels, reduction="sum"
+                    loss_ce = compute_sharded_cross_entropy_loss(
+                        local_preds,
+                        local_labels,
+                        self.spatial_mesh,
+                        self.config.dc_num_shards,
+                        self.amp_device_type,
+                        self.ce_class_weights,
                     )
-                    global_ce_sum = SpatialAllReduce.apply(
-                        local_ce_sum, self.spatial_mesh
-                    )
-                    local_voxel_count = torch.tensor(
-                        float(local_labels.numel()),
-                        device=local_labels.device,
-                        dtype=VOLUME_DTYPE,
-                    )
-                    global_total_voxels = SpatialAllReduce.apply(
-                        local_voxel_count, self.spatial_mesh
-                    )
-                    loss_ce = global_ce_sum / global_total_voxels
 
-                    # Compute global dice loss from sharded dice loss
                     local_preds_softmax = F.softmax(local_preds.float(), dim=1)
                     local_labels_one_hot = (
                         F.one_hot(
@@ -659,26 +717,15 @@ class PyTorchTrainer(BaseTrainer):
 
                             # Calculate CE and Dice loss in single precision for numerical stability.
                             with torch.autocast(**self._autocast_kwargs(enabled=False)):
-                                # Compute global CE loss from sharded CE loss
-                                local_ce_sum = F.cross_entropy(
-                                    local_preds.float(),
+                                loss_ce = compute_sharded_cross_entropy_loss(
+                                    local_preds,
                                     local_labels,
-                                    reduction="sum",
+                                    self.spatial_mesh,
+                                    self.config.dc_num_shards,
+                                    self.amp_device_type,
+                                    self.ce_class_weights,
                                 )
-                                global_ce_sum = SpatialAllReduce.apply(
-                                    local_ce_sum, self.spatial_mesh
-                                )
-                                local_voxel_count = torch.tensor(
-                                    float(local_labels.numel()),
-                                    device=local_labels.device,
-                                    dtype=VOLUME_DTYPE,
-                                )
-                                global_total_voxels = SpatialAllReduce.apply(
-                                    local_voxel_count, self.spatial_mesh
-                                )
-                                loss_ce = global_ce_sum / global_total_voxels
 
-                                # Compute global dice loss from sharded dice loss
                                 local_preds_softmax = F.softmax(
                                     local_preds.float(), dim=1
                                 )
