@@ -21,9 +21,9 @@ from pathlib import Path
 
 # Third party
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 from distconv import DCTensor
 from torch import optim
 from torch.utils.data import DataLoader
@@ -34,10 +34,10 @@ from ScaFFold.utils.data_loading import FractalDataset, SpatialShardSpec
 from ScaFFold.utils.data_types import AMP_DTYPE
 from ScaFFold.utils.dice_score import compute_sharded_dice
 from ScaFFold.utils.distributed import get_local_rank, get_world_rank, get_world_size
-from ScaFFold.utils.losses import compute_sharded_cross_entropy_loss
 
 # Local
 from ScaFFold.utils.evaluate import evaluate
+from ScaFFold.utils.losses import compute_sharded_cross_entropy_loss
 from ScaFFold.utils.perf_measure import adiak_value, begin_code_region, end_code_region
 from ScaFFold.utils.utils import gather_and_print_mem
 
