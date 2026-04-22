@@ -17,7 +17,6 @@ import math
 import os
 import shutil
 import time
-import math
 from pathlib import Path
 
 # Third party
