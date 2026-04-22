@@ -23,8 +23,10 @@ import numpy as np
 import psutil
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import Replicate, Shard
 import yaml
 from distconv import DistConvDDP, ParallelStrategy
+
 
 from ScaFFold.datagen.get_dataset import get_dataset
 from ScaFFold.unet import UNet
