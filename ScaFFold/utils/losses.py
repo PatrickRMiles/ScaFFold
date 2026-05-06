@@ -13,9 +13,88 @@
 # SPDX-License-Identifier: (Apache-2.0)
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 
 from ScaFFold.utils.dice_score import SpatialAllReduce
+
+
+def _sample_ce_weight_indices(n_train, requested_samples):
+    """Pick a small, deterministic subset of masks to estimate CE weights."""
+    if n_train <= 0:
+        return []
+
+    sample_count = min(max(int(requested_samples or 8), 1), n_train)
+    if sample_count == n_train:
+        return list(range(n_train))
+
+    return torch.linspace(0, n_train - 1, steps=sample_count).long().tolist()
+
+
+def _compute_ce_class_weights(
+    train_set,
+    n_train,
+    n_categories,
+    device,
+    requested_samples=8,
+    dist_enabled=False,
+    world_rank=0,
+    log=None,
+):
+    """
+    Estimate background vs foreground CE weights from a few training masks.
+
+    Background keeps its own inverse-frequency weight, and every non-zero
+    fractal class shares the foreground weight derived from the aggregate
+    non-empty voxel count.
+    """
+
+    num_classes = n_categories + 1
+    class_weights = torch.ones(num_classes, device=device, dtype=torch.float32)
+
+    if n_train == 0:
+        if log is not None:
+            log.warning(
+                "Training set is empty while computing CE class weights. Falling back to uniform weights."
+            )
+        return class_weights
+
+    sample_indices = _sample_ce_weight_indices(n_train, requested_samples)
+    sampled_class_counts = torch.zeros(num_classes, dtype=torch.long)
+
+    for sample_idx in sample_indices:
+        mask = train_set[sample_idx]["mask"]
+        sampled_class_counts += torch.bincount(
+            mask.reshape(-1), minlength=num_classes
+        )
+
+    # The dataset may already return only this rank's local spatial shard,
+    # so combine per-rank counts before deriving the global CE weights.
+    sampled_class_counts = sampled_class_counts.to(device=device)
+    if dist_enabled:
+        dist.all_reduce(sampled_class_counts, op=dist.ReduceOp.SUM)
+
+    background_voxels = int(sampled_class_counts[0].item())
+    foreground_voxels = int(sampled_class_counts[1:].sum().item())
+
+    if background_voxels > 0 and foreground_voxels > 0:
+        total_voxels = background_voxels + foreground_voxels
+        class_weights[0] = total_voxels / background_voxels
+        class_weights[1:] = total_voxels / foreground_voxels
+    elif log is not None:
+        log.warning(
+            "Sampled masks did not contain both background and foreground voxels. Falling back to uniform CE weights."
+        )
+
+    if log is not None and (not dist_enabled or world_rank == 0):
+        log.info(
+            f"CE weights estimated from {len(sample_indices)} training masks "
+            f"(indices={sample_indices}): background_voxels={background_voxels} "
+            f"foreground_voxels={foreground_voxels} "
+            f"weights={class_weights.detach().cpu().tolist()}"
+        )
+
+    return class_weights
 
 
 def compute_sharded_cross_entropy_loss(

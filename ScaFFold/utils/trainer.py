@@ -21,7 +21,6 @@ from pathlib import Path
 
 # Third party
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from distconv import DCTensor
@@ -37,7 +36,10 @@ from ScaFFold.utils.distributed import get_local_rank, get_world_rank, get_world
 
 # Local
 from ScaFFold.utils.evaluate import evaluate
-from ScaFFold.utils.losses import compute_sharded_cross_entropy_loss
+from ScaFFold.utils.losses import (
+    _compute_ce_class_weights,
+    compute_sharded_cross_entropy_loss,
+)
 from ScaFFold.utils.perf_measure import adiak_value, begin_code_region, end_code_region
 from ScaFFold.utils.utils import gather_and_print_mem
 
@@ -184,70 +186,6 @@ class BaseTrainer:
                 "Reduce batch_size or adjust validation sharding."
             )
 
-    def _sample_ce_weight_indices(self):
-        """Pick a small, deterministic subset of masks to estimate CE weights."""
-        requested_samples = int(self.config["ce_weight_num_samples"])
-        sample_count = min(max(requested_samples, 1), self.n_train)
-        if sample_count == self.n_train:
-            return list(range(self.n_train))
-
-        return torch.linspace(0, self.n_train - 1, steps=sample_count).long().tolist()
-
-    def _compute_ce_class_weights(self):
-        """
-        Estimate background vs foreground CE weights from a few training masks.
-
-        Background keeps its own inverse-frequency weight, and every non-zero
-        fractal class shares the foreground weight derived from the aggregate
-        non-empty voxel count.
-        """
-
-        num_classes = self.config.n_categories + 1
-        class_weights = torch.ones(num_classes, device=self.device, dtype=torch.float32)
-
-        if self.n_train == 0:
-            self.log.warning(
-                "Training set is empty while computing CE class weights. Falling back to uniform weights."
-            )
-            return class_weights
-
-        sample_indices = self._sample_ce_weight_indices()
-        sampled_class_counts = torch.zeros(num_classes, dtype=torch.long)
-
-        for sample_idx in sample_indices:
-            mask = self.train_set[sample_idx]["mask"]
-            sampled_class_counts += torch.bincount(
-                mask.reshape(-1), minlength=num_classes
-            )
-
-        # The dataset may already return only this rank's local spatial shard,
-        # so combine per-rank counts before deriving the global CE weights.
-        sampled_class_counts = sampled_class_counts.to(device=self.device)
-        if self.config.dist:
-            dist.all_reduce(sampled_class_counts, op=dist.ReduceOp.SUM)
-
-        background_voxels = int(sampled_class_counts[0].item())
-        foreground_voxels = int(sampled_class_counts[1:].sum().item())
-
-        if background_voxels > 0 and foreground_voxels > 0:
-            total_voxels = background_voxels + foreground_voxels
-            class_weights[0] = total_voxels / background_voxels
-            class_weights[1:] = total_voxels / foreground_voxels
-        else:
-            self.log.warning(
-                "Sampled masks did not contain both background and foreground voxels. Falling back to uniform CE weights."
-            )
-
-        if not self.config.dist or self.world_rank == 0:
-            self.log.info(
-                f"CE weights estimated from {len(sample_indices)} training masks "
-                f"(indices={sample_indices}): background_voxels={background_voxels} "
-                f"foreground_voxels={foreground_voxels} "
-                f"weights={class_weights.detach().cpu().tolist()}"
-            )
-
-        return class_weights
-
     def setup_training_components(self):
         """Set up the optimizer, scheduler, gradient scaler, and loss function."""
         # Set up optimizer
@@ -285,11 +223,22 @@ class BaseTrainer:
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self.use_grad_scaler)
 
         # Set up loss function
-        self.criterion = (
-            nn.CrossEntropyLoss(weight=self._compute_ce_class_weights()).to(self.device)
-            if self.config.n_categories + 1 > 1
-            else nn.BCEWithLogitsLoss().to(self.device)
-        )
+        if self.config.n_categories + 1 > 1:
+            ce_class_weights = _compute_ce_class_weights(
+                train_set=self.train_set,
+                n_train=self.n_train,
+                n_categories=self.config.n_categories,
+                device=self.device,
+                requested_samples=self.config.ce_weight_num_samples,
+                dist_enabled=self.config.dist,
+                world_rank=self.world_rank,
+                log=self.log,
+            )
+            self.criterion = nn.CrossEntropyLoss(weight=ce_class_weights).to(
+                self.device
+            )
+        else:
+            self.criterion = nn.BCEWithLogitsLoss().to(self.device)
         if isinstance(self.criterion, nn.CrossEntropyLoss):
             self.ce_class_weights = self.criterion.weight
 
