@@ -72,9 +72,7 @@ def _compute_ce_class_weights(
 
     for sample_idx in sample_indices:
         mask = train_set[sample_idx]["mask"]
-        sampled_class_counts += torch.bincount(
-            mask.reshape(-1), minlength=num_classes
-        )
+        sampled_class_counts += torch.bincount(mask.reshape(-1), minlength=num_classes)
 
     # The dataset may already return only this rank's local spatial shard,
     # so combine per-rank counts before deriving the global CE weights.
