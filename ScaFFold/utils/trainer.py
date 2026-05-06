@@ -229,7 +229,7 @@ class BaseTrainer:
                 n_train=self.n_train,
                 n_categories=self.config.n_categories,
                 device=self.device,
-                requested_samples=self.config.ce_weight_num_samples,
+                sample_fraction=self.config.ce_weight_sample_fraction,
                 dist_enabled=self.config.dist,
                 world_rank=self.world_rank,
                 log=self.log,

@@ -12,6 +12,8 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 
+import math
+
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -19,12 +21,18 @@ import torch.nn.functional as F
 from ScaFFold.utils.dice_score import SpatialAllReduce
 
 
-def _sample_ce_weight_indices(n_train, requested_samples):
+def _sample_ce_weight_indices(n_train, sample_fraction):
     """Pick a small, deterministic subset of masks to estimate CE weights."""
     if n_train <= 0:
         return []
 
-    sample_count = min(max(int(requested_samples or 8), 1), n_train)
+    if sample_fraction is None:
+        sample_fraction = 0.1
+
+    sample_count = min(
+        max(math.ceil(n_train * float(sample_fraction)), 1),
+        n_train,
+    )
     if sample_count == n_train:
         return list(range(n_train))
 
@@ -36,7 +44,7 @@ def _compute_ce_class_weights(
     n_train,
     n_categories,
     device,
-    requested_samples=8,
+    sample_fraction=0.1,
     dist_enabled=False,
     world_rank=0,
     log=None,
@@ -59,7 +67,7 @@ def _compute_ce_class_weights(
             )
         return class_weights
 
-    sample_indices = _sample_ce_weight_indices(n_train, requested_samples)
+    sample_indices = _sample_ce_weight_indices(n_train, sample_fraction)
     sampled_class_counts = torch.zeros(num_classes, dtype=torch.long)
 
     for sample_idx in sample_indices:
@@ -89,7 +97,8 @@ def _compute_ce_class_weights(
     if log is not None and (not dist_enabled or world_rank == 0):
         log.info(
             f"CE weights estimated from {len(sample_indices)} training masks "
-            f"(indices={sample_indices}): background_voxels={background_voxels} "
+            f"(sample_fraction={sample_fraction}, indices={sample_indices}): "
+            f"background_voxels={background_voxels} "
             f"foreground_voxels={foreground_voxels} "
             f"weights={class_weights.detach().cpu().tolist()}"
         )
