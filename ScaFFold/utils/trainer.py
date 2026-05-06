@@ -31,7 +31,7 @@ from tqdm import tqdm
 
 from ScaFFold.utils.checkpointing import CheckpointManager
 from ScaFFold.utils.data_loading import FractalDataset, SpatialShardSpec
-from ScaFFold.utils.data_types import AMP_DTYPE
+from ScaFFold.utils.data_types import AMP_DTYPE, VOLUME_DTYPE
 from ScaFFold.utils.dice_score import compute_sharded_dice
 from ScaFFold.utils.distributed import get_local_rank, get_world_rank, get_world_size
 
