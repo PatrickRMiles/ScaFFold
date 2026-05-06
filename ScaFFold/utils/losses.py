@@ -58,9 +58,7 @@ def compute_sharded_cross_entropy_loss(
             # an all-reduced count instead of numel()*num_shards because shard
             # sizes can differ at chunk boundaries.
             local_voxel_count = local_ce_sum.new_tensor(float(local_labels.numel()))
-            global_normalizer = SpatialAllReduce.apply(
-                local_voxel_count, spatial_mesh
-            )
+            global_normalizer = SpatialAllReduce.apply(local_voxel_count, spatial_mesh)
         else:
             # Weighted CE divides by sum(weight[target_i]) over all voxels.
             # Build that denominator from the local label histogram, then
