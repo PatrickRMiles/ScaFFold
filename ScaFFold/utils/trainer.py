@@ -186,7 +186,7 @@ class BaseTrainer:
 
     def _sample_ce_weight_indices(self):
         """Pick a small, deterministic subset of masks to estimate CE weights."""
-        requested_samples = int(getattr(self.config, "ce_weight_num_samples", 8) or 8)
+        requested_samples = int(self.config["ce_weight_num_samples"])
         sample_count = min(max(requested_samples, 1), self.n_train)
         if sample_count == self.n_train:
             return list(range(self.n_train))
