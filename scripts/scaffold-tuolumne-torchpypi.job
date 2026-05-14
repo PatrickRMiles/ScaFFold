@@ -14,6 +14,12 @@ ml cce/21.0.0 cray-mpich/9.1.0 rocm/7.1.1 rccl/fast-env-slows-mpi
 # Use ccl plugin that we manually built with install-rccl.sh
 export NCCL_NET_PLUGIN=../aws-ofi-nccl.git/install/lib/librccl-net.so
 
+# Persist MIOpen's find database and compiled-kernel cache across job submissions.
+# On Tuolumne, torchrun-hpc derives the MIOpen cache paths from TMPDIR.
+export SCAFFOLD_MIOPEN_CACHE_ROOT="${SCAFFOLD_MIOPEN_CACHE_ROOT:-$(pwd)/.scaffold-miopen-cache}"
+export TMPDIR="${SCAFFOLD_MIOPEN_TMPDIR:-${SCAFFOLD_MIOPEN_CACHE_ROOT}/tmp}"
+mkdir -p "${TMPDIR}/MIOpen_user_db" "${TMPDIR}/MIOpen_custom_cache"
+
 # Disable direct convolution benchmarking (should speedup warmup by a significant amount, does the below three options together)
 # export MIOPEN_DEBUG_CONV_DIRECT=0
 # Disable direct naive convolution benchmarking (naive_conv_ab_nonpacked_fwd_ndhwc_half_double_half.kd)
